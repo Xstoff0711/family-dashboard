@@ -42,7 +42,7 @@ button.btn.del{color:var(--danger)}
 button.icon{border:0;background:none;color:var(--mut);font-size:18px;cursor:pointer;padding:2px 6px}
 .bar{display:flex;gap:8px;align-items:center;margin:6px 0 4px;flex-wrap:wrap}
 .bar .sp{flex:1}
-input[type=text],input[type=date],select,textarea{font:inherit;width:100%;padding:9px 10px;border-radius:10px;border:1px solid var(--line);background:var(--card);color:var(--ink);margin:4px 0}
+input[type=text],input[type=date],input[type=email],input[type=password],input[type=number],select,textarea{font:inherit;width:100%;padding:9px 10px;border-radius:10px;border:1px solid var(--line);background:var(--card);color:var(--ink);margin:4px 0}
 textarea{resize:vertical}
 label.chk{display:flex;gap:8px;align-items:center;margin:6px 0}
 input[type=checkbox]{width:20px;height:20px;accent-color:var(--acc);flex:none}
@@ -88,13 +88,29 @@ ul.ings{padding-left:20px;margin:6px 0}
 .chips.nowrap{flex-wrap:nowrap;overflow-x:auto;padding-bottom:4px}
 .chips.nowrap button{flex:none}
 .hero{width:100%;max-height:220px;object-fit:cover;border-radius:12px;margin:8px 0}
+#auth{position:fixed;inset:0;z-index:30;background:var(--bg);overflow:auto;padding:calc(24px + env(safe-area-inset-top)) 16px 32px}
+#auth .box{max-width:420px;margin:0 auto}
+#auth h1{font-size:26px;margin:24px 0 6px}
+#auth .aerr,.perr{background:color-mix(in srgb,var(--danger) 12%,var(--card));color:var(--danger);border:1px solid var(--danger);border-radius:10px;padding:8px 10px;margin:8px 0;font-size:14px}
+#auth .aerr:empty,.perr:empty{display:none}
+#auth button.btn.pri{width:100%;margin-top:8px}
+#auth code,.sheet code{background:var(--chip);padding:1px 6px;border-radius:6px;font-size:13px}
+label.fl,div.fl{display:block;font-size:13px;color:var(--mut);margin-top:10px}
+#me{border:0;width:34px;height:34px;border-radius:50%;color:#fff;font:600 15px/34px system-ui,sans-serif;cursor:pointer;padding:0;flex:none}
+.sw{display:flex;gap:8px;flex-wrap:wrap;margin:6px 0}
+.sw button{width:34px;height:34px;border-radius:50%;border:3px solid transparent;cursor:pointer;padding:0}
+.sw button.on{border-color:var(--ink)}
+.mem{display:flex;align-items:center;gap:10px;padding:8px 0}
+.mem+.mem{border-top:1px solid var(--line)}
+.mem .av{width:28px;height:28px;border-radius:50%;color:#fff;font:600 13px/28px system-ui,sans-serif;text-align:center;flex:none}
 </style>
 </head>
 <body>
-<header><h1>🏡 Familie <small style="font-size:11px;font-weight:400;color:var(--mut)">v14</small></h1><span id="sync"></span></header>
+<header><h1>🏡 <span id="fam">Familie</span> <small style="font-size:11px;font-weight:400;color:var(--mut)">v15</small></h1><span id="sync"></span><button id="me" data-a="tab" data-t="profile" aria-label="Profil" hidden></button></header>
 <main id="view"></main>
 <nav><div class="in" id="nav"></div></nav>
 <div id="modal"></div>
+<div id="auth" hidden></div>
 <input type="file" id="photof" accept="image/*" hidden>
 
 <script>
@@ -417,6 +433,107 @@ const DEFAULTS = {
   shopping: () => ({checked:{}, manual:[]}),
 };
 
+/* ---------- Anmeldung ---------- */
+let ME = null;   // {user, family} nach erfolgreicher Anmeldung
+let AUTH = null; // Zustand der Anmeldeseite
+const COLORS = ['#3b82f6','#ec4899','#10b981','#f59e0b','#8b5cf6','#ef4444','#14b8a6','#64748b'];
+const rawFetch = window.fetch.bind(window);
+async function api(method, url, body){
+  try {
+    const r = await rawFetch(url, {method, headers: body ? {'Content-Type':'application/json'} : {}, body: body ? JSON.stringify(body) : undefined});
+    const j = await r.json().catch(() => ({}));
+    return {ok:r.ok, status:r.status, j};
+  } catch (e) { return {ok:false, status:0, j:{message:'Der Server ist nicht erreichbar.'}}; }
+}
+/* Läuft die Sitzung ab (401), erscheint wieder die Anmeldung */
+window.fetch = async (u, o) => {
+  const r = await rawFetch(u, o);
+  if (r.status === 401 && ME && typeof u === 'string' && u.startsWith('api/') && !u.startsWith('api/auth/')) {
+    const j = await r.clone().json().catch(() => ({}));
+    ME = null; showAuth({mode: j.setup ? 'setup' : 'login'});
+  }
+  return r;
+};
+function setErr(id, t){ const e = document.getElementById(id); if (e) e.textContent = t || ''; }
+function showAuth(a){
+  AUTH = a; ME = null; S = {}; ui.modal = null;
+  $('#me').hidden = true; $('#fam').textContent = 'Familie'; setSync('');
+  const box = $('#auth'); box.hidden = false; box.innerHTML = authHTML();
+  const first = box.querySelector('input'); if (first) first.focus();
+}
+function authHTML(){
+  const a = AUTH;
+  const f = (id, label, type, extra = '', v = '') => `<label class="fl" for="${id}">${label}</label><input type="${type}" id="${id}" name="${id}" value="${esc(v)}" ${extra}>`;
+  const pw2 = f('password2', 'Passwort wiederholen', 'password', 'autocomplete="new-password" required');
+  let title, sub, fields, btn, foot = '';
+  if (a.mode === 'setup') {
+    title = 'Willkommen 👋'; btn = 'Konto anlegen';
+    sub = 'Es gibt noch kein Konto. Lege jetzt das erste an. Alle bisherigen Daten (Rezepte, Wochenplan, Aufgaben …) gehören danach zu dieser Familie.';
+    fields = f('code', 'Einrichtungscode', 'text', 'autocomplete="off" autocapitalize="off" required') +
+      `<div class="muted small">Steht im Log des Containers: <code>docker compose logs familiendashboard</code></div>` +
+      f('family_name', 'Name der Familie', 'text', 'maxlength="60" required', 'Familie') +
+      f('name', 'Dein Name', 'text', 'maxlength="60" autocomplete="name" required') +
+      f('email', 'E-Mail (zum Anmelden)', 'email', 'autocomplete="username" required') +
+      f('password', 'Passwort (mindestens 10 Zeichen)', 'password', 'autocomplete="new-password" minlength="10" required') + pw2;
+  } else if (a.mode === 'register') {
+    const nf = a.info.new_family;
+    title = 'Einladung'; btn = 'Konto anlegen';
+    sub = nf ? 'Du wurdest eingeladen, eine eigene Familie anzulegen. Eure Daten bleiben getrennt von allen anderen Familien.'
+             : `Du wurdest zur Familie „${esc(a.info.family_name)}“ eingeladen.`;
+    fields = (nf ? f('family_name', 'Name eurer Familie', 'text', 'maxlength="60" required') : '') +
+      f('name', 'Dein Name', 'text', 'maxlength="60" autocomplete="name" required') +
+      f('email', 'E-Mail (zum Anmelden)', 'email', 'autocomplete="username" required') +
+      f('password', 'Passwort (mindestens 10 Zeichen)', 'password', 'autocomplete="new-password" minlength="10" required') + pw2;
+    foot = '<p class="muted small" style="text-align:center">Schon ein Konto? <a class="link" href="./">Zur Anmeldung</a></p>';
+  } else {
+    title = 'Anmelden'; btn = 'Anmelden'; sub = '';
+    fields = f('email', 'E-Mail', 'email', 'autocomplete="username" required') + f('password', 'Passwort', 'password', 'autocomplete="current-password" required');
+    foot = '<p class="muted small" style="text-align:center">Noch kein Konto? Dafür brauchst du einen Einladungslink.</p>';
+  }
+  return `<div class="box"><h1>🏡 ${title}</h1>${sub ? `<p class="muted">${sub}</p>` : ''}
+    <form id="authform" autocomplete="on">${fields}<div class="aerr" id="aerr">${esc(a.error || '')}</div><button class="btn pri" type="submit">${btn}</button></form>${foot}</div>`;
+}
+async function authSubmit(form){
+  const a = AUTH, v = n => form.elements[n] ? form.elements[n].value : '';
+  if (a.mode !== 'login' && v('password') !== v('password2')) return setErr('aerr', 'Die Passwörter stimmen nicht überein.');
+  let url, body;
+  if (a.mode === 'login') { url = 'api/auth/login'; body = {email:v('email'), password:v('password')}; }
+  else if (a.mode === 'register') { url = 'api/auth/register'; body = {token:a.invite, email:v('email'), name:v('name'), password:v('password'), family_name:v('family_name')}; }
+  else { url = 'api/auth/setup'; body = {code:v('code'), family_name:v('family_name'), email:v('email'), name:v('name'), password:v('password')}; }
+  const btn = form.querySelector('button[type=submit]'); btn.disabled = true; setErr('aerr', '');
+  const r = await api('POST', url, body);
+  btn.disabled = false;
+  if (!r.ok) return setErr('aerr', r.j.message || 'Das hat nicht geklappt.');
+  ME = r.j;
+  if (location.search) history.replaceState(null, '', location.pathname);
+  $('#auth').hidden = true; $('#auth').innerHTML = '';
+  startApp();
+}
+function updateHeader(){
+  $('#fam').textContent = ME.family.name;
+  const b = $('#me'); b.hidden = false; b.textContent = (ME.user.name.trim()[0] || '?').toUpperCase();
+  b.style.background = ME.user.color; b.title = ME.user.name;
+}
+function startApp(){
+  S = {}; readOnly = false; ui.tab = 'today'; ui.modal = null;
+  updateHeader();
+  $('#view').innerHTML = '<div class="empty">Lade …</div>';
+  load();
+}
+async function boot(){
+  const inv = new URLSearchParams(location.search).get('invite');
+  let note = '';
+  if (inv) {
+    const r = await api('GET', 'api/invite/' + encodeURIComponent(inv));
+    if (r.ok) return showAuth({mode:'register', invite:inv, info:r.j});
+    note = r.j.message || '';
+  }
+  const r = await api('GET', 'api/me');
+  if (r.ok) { ME = r.j; return startApp(); }
+  if (r.status === 0) { $('#view').innerHTML = '<div class="empty">Der Server ist nicht erreichbar.<div class="bar" style="justify-content:center"><button class="btn" data-a="retry">Nochmal versuchen</button></div></div>'; return; }
+  showAuth({mode: r.j.setup ? 'setup' : 'login', error: note});
+}
+
 /* ---------- Zustand & Speichern ---------- */
 const KEYS = Object.keys(DEFAULTS);
 const ALL_KEYS = [...KEYS, 'meta'];
@@ -440,6 +557,7 @@ function save(k){
 async function load(){
   try {
     const r = await fetch('api/state');
+    if (r.status === 401) return;
     if (!r.ok) throw new Error(r.status);
     const d = await r.json();
     const fresh = d.recipes == null;
@@ -473,7 +591,7 @@ async function load(){
   render();
   loadEvents();
 }
-document.addEventListener('visibilitychange', () => { if (!document.hidden && !ui.modal) load(); });
+document.addEventListener('visibilitychange', () => { if (!document.hidden && !ui.modal && ME) load(); });
 
 /* ---------- Daten-Zugriff ---------- */
 const checkKey = (id, p) => `${p.wk}|${p.d}|${p.s}|${id}`;
@@ -1040,6 +1158,11 @@ function modalHTML(){
       <div class="scrollbox tpl">${Object.entries(groups).map(([g, l]) => `<h2>${g}</h2>${l.map(([t, i]) => { const has = S.chores.some(c => c.title === t.title); return `<button class="pick ${has ? 'dim' : ''}" data-a="tplAdd" data-i="${i}"><b>${has ? '✓ ' : ''}${esc(t.title)}</b><div class="muted small">${RHYTHM[t.repeat]}${t.repeat === 'weekly' || t.repeat === 'biweekly' ? ' · ' + DAYS[t.day] : ''} · ${WHO[t.who]}</div></button>`; }).join('')}`).join('')}</div>
       <div class="bar"><button class="btn del" data-a="tplClear">Alle Aufgaben entfernen</button><span class="sp"></span><button class="btn pri" data-a="close">Fertig</button></div>`);
   }
+  if (m.type === 'invite') return sheet(`<h3>${m.newFamily ? 'Neue Familie einladen' : 'Mitglied einladen'}</h3>
+      <p class="muted small">${m.newFamily ? 'Die eingeladene Person legt damit eine eigene Familie an und sieht nichts von euren Daten.' : 'Die eingeladene Person gehört danach zu deiner Familie und sieht alle gemeinsamen Daten.'}
+      Der Link gilt 7 Tage und nur einmal. Er funktioniert nur über denselben Zugang (z. B. Tailscale) wie diese Seite.</p>
+      <input type="text" id="invurl" readonly value="${esc(m.url)}" onfocus="this.select()">
+      <div class="bar"><span class="sp"></span><button class="btn" data-a="copyInvite">Kopieren</button><button class="btn pri" data-a="close">Fertig</button></div>`);
   if (m.type === 'rand') {
     const a = m.a;
     return sheet(`<h3>🎲 ${esc(a.title)}</h3><div class="muted">${esc(a.place)}${a.cost?' · '+esc(a.cost):''}</div><p>${esc(a.note)}</p>
@@ -1048,12 +1171,84 @@ function modalHTML(){
   return '';
 }
 
+/* ---------- Profil ---------- */
+function viewProfile(){
+  const u = ME.user, f = ME.family, admin = u.role === 'admin';
+  const sw = COLORS.map(c => `<button type="button" class="${c === u.color ? 'on' : ''}" style="background:${c}" data-a="pickColor" data-c="${c}" aria-label="Farbe ${c}"></button>`).join('');
+  const mem = f.members.map(m => `<div class="mem"><span class="av" style="background:${esc(m.color)}">${esc((m.name[0] || '?').toUpperCase())}</span>
+    <div class="grow"><b>${esc(m.name)}</b>${m.id === u.id ? ' <span class="muted small">(du)</span>' : ''}</div>
+    <span class="chip">${m.role === 'admin' ? 'Admin' : 'Mitglied'}</span>
+    ${admin && m.id !== u.id ? `<button class="icon" data-a="rmMember" data-id="${esc(m.id)}" data-n="${esc(m.name)}" aria-label="Entfernen">✕</button>` : ''}</div>`).join('');
+  const radii = [10, 25, 40, 60, 100];
+  if (!radii.includes(f.radius)) radii.push(f.radius);
+  const dis = admin ? '' : ' disabled';
+  return `<h2>Mein Konto</h2>
+    <form class="card" data-form="profile">
+      <label class="fl" for="pn">Name</label><input type="text" id="pn" value="${esc(u.name)}" maxlength="60" autocomplete="name" required>
+      <div class="fl">E-Mail (zum Anmelden)</div><div>${esc(u.email)}</div>
+      <div class="fl">Farbe</div><div class="sw">${sw}</div><input type="hidden" id="pcol" value="${esc(u.color)}">
+      <div class="perr" id="perr1"></div>
+      <div class="bar"><span class="sp"></span><button class="btn pri" type="submit">Speichern</button></div>
+    </form>
+    <h2>Passwort ändern</h2>
+    <form class="card" data-form="pw">
+      <input type="email" value="${esc(u.email)}" autocomplete="username" hidden>
+      <label class="fl" for="pwo">Aktuelles Passwort</label><input type="password" id="pwo" autocomplete="current-password" required>
+      <label class="fl" for="pwn">Neues Passwort (mindestens 10 Zeichen)</label><input type="password" id="pwn" autocomplete="new-password" minlength="10" required>
+      <label class="fl" for="pwn2">Neues Passwort wiederholen</label><input type="password" id="pwn2" autocomplete="new-password" required>
+      <div class="muted small">Auf allen anderen Geräten wirst du danach abgemeldet.</div>
+      <div class="perr" id="perr2"></div>
+      <div class="bar"><span class="sp"></span><button class="btn pri" type="submit">Passwort ändern</button></div>
+    </form>
+    <h2>Familie</h2>
+    <div class="card">
+      <form data-form="famname">
+        <label class="fl" for="fn">Name der Familie</label>
+        <div class="bar" style="margin-top:0;flex-wrap:nowrap"><input type="text" id="fn" value="${esc(f.name)}" maxlength="60" style="flex:1;width:auto" required${dis}>${admin ? '<button class="btn" type="submit">Speichern</button>' : ''}</div>
+        <div class="perr" id="perr3"></div>
+      </form>
+      <div class="fl">Mitglieder</div>${mem}
+      ${admin ? `<div class="bar"><button class="btn" data-a="invite">＋ Mitglied einladen</button>${u.superadmin ? '<button class="btn" data-a="inviteFamily">＋ Neue Familie einladen</button>' : ''}</div>` : ''}
+    </div>
+    <h2>Standort</h2>
+    <form class="card" data-form="loc">
+      <label class="fl" for="lo">Wohnort</label><input type="text" id="lo" value="${esc(f.ort)}" maxlength="80" placeholder="z. B. Krefeld" autocomplete="address-level2"${dis}>
+      <label class="fl" for="lp">Postleitzahl</label><input type="text" id="lp" value="${esc(f.plz)}" maxlength="5" inputmode="numeric" pattern="[0-9]{0,5}" autocomplete="postal-code"${dis}>
+      <label class="fl" for="lr">Umkreis für Veranstaltungen</label>
+      <select id="lr"${dis}>${radii.sort((a, b) => a - b).map(r => `<option value="${r}" ${r === f.radius ? 'selected' : ''}>${r} km</option>`).join('')}</select>
+      <div class="muted small" style="margin-top:6px">Nur Ort oder Postleitzahl, keine Straße. Der Standort gilt für die ganze Familie. Veranstaltungen werden derzeit für Krefeld, Düsseldorf, Köln und Umgebung gesammelt, die Orte-Auswahl unter „Ideen“ gilt weiterhin.${admin ? '' : ' Ändern können nur Admins.'}</div>
+      <div class="perr" id="perr4"></div>
+      ${admin ? '<div class="bar"><span class="sp"></span><button class="btn pri" type="submit">Speichern</button></div>' : ''}
+    </form>
+    <div class="bar" style="margin-top:20px"><button class="btn del" data-a="logout">Abmelden</button></div>`;
+}
+async function profDone(r, errId){
+  if (!r.ok) return setErr(errId, r.j.message || 'Speichern fehlgeschlagen.');
+  ME = r.j; updateHeader(); setSync('✓ gespeichert'); render();
+}
+const FORMS = {
+  profile: async () => profDone(await api('POST', 'api/me', {name:val('pn'), color:val('pcol')}), 'perr1'),
+  famname: async () => profDone(await api('PUT', 'api/family', {name:val('fn')}), 'perr3'),
+  loc: async () => profDone(await api('PUT', 'api/family', {ort:val('lo'), plz:val('lp'), radius:Number(val('lr'))}), 'perr4'),
+  pw: async f => {
+    if (val('pwn') !== val('pwn2')) return setErr('perr2', 'Die neuen Passwörter stimmen nicht überein.');
+    const r = await api('POST', 'api/me/password', {old:val('pwo'), new:val('pwn')});
+    if (!r.ok) return setErr('perr2', r.j.message || 'Das hat nicht geklappt.');
+    f.reset(); setErr('perr2', ''); setSync('✓ Passwort geändert');
+  },
+};
+async function makeInvite(newFamily){
+  const r = await api('POST', 'api/invites', newFamily ? {new_family:true} : {role:'member'});
+  if (!r.ok) { ui.modal = {type:'msg', title:'Einladung nicht möglich', text:r.j.message || 'Das hat nicht geklappt.'}; return render(); }
+  ui.modal = {type:'invite', newFamily, url: location.origin + location.pathname + '?invite=' + r.j.token}; render();
+}
+
 /* ---------- Rendern ---------- */
 const TABS = [['today','🏠','Heute'],['week','🍽️','Essen'],['shop','🛒','Einkauf'],['ideas','🌳','Ideen'],['out','🍷','Ausgehen'],['chores','✅','Haushalt']];
 function render(){
-  const views = {today:viewToday, week:viewWeek, recipes:viewRecipes, shop:viewShop, ideas:viewIdeas, out:viewOut, chores:viewChores};
+  const views = {profile:viewProfile, today:viewToday, week:viewWeek, recipes:viewRecipes, shop:viewShop, ideas:viewIdeas, out:viewOut, chores:viewChores};
   $('#view').innerHTML = views[ui.tab]();
-  const active = ui.tab === 'recipes' ? 'week' : ui.tab;
+  const active = ui.tab === 'recipes' ? 'week' : ui.tab === 'profile' ? '' : ui.tab;
   $('#nav').innerHTML = TABS.map(([k,ic,l]) => `<button class="${k===active?'on':''}" data-a="tab" data-t="${k}"><span>${ic}</span>${l}</button>`).join('');
   $('#modal').innerHTML = modalHTML();
 }
@@ -1249,6 +1444,33 @@ const ACT = {
   },
   tplClear: () => { if (!confirm('Wirklich ALLE Aufgaben entfernen?')) return; S.chores = []; save('chores'); render(); },
 };
+Object.assign(ACT, {
+  retry: () => boot(),
+  pickColor: ds => {
+    document.getElementById('pcol').value = ds.c;
+    document.querySelectorAll('.sw button').forEach(b => b.classList.toggle('on', b.dataset.c === ds.c));
+  },
+  invite: () => makeInvite(false),
+  inviteFamily: () => makeInvite(true),
+  copyInvite: async () => {
+    const el = document.getElementById('invurl');
+    try { await navigator.clipboard.writeText(el.value); } catch (e) { el.select(); document.execCommand('copy'); }
+    setSync('✓ Link kopiert');
+  },
+  rmMember: async ds => {
+    if (!confirm(`${ds.n} aus der Familie entfernen? Das Konto wird gelöscht und auf allen Geräten abgemeldet.`)) return;
+    const r = await api('DELETE', 'api/family/members/' + ds.id);
+    if (!r.ok) { ui.modal = {type:'msg', title:'Nicht möglich', text:r.j.message || 'Das hat nicht geklappt.'}; return render(); }
+    const m = await api('GET', 'api/me'); if (m.ok) ME = m.j; render();
+  },
+  logout: async () => { await api('POST', 'api/auth/logout'); location.href = location.pathname; },
+});
+document.addEventListener('submit', e => {
+  const f = e.target; e.preventDefault();
+  if (f.id === 'authform') return authSubmit(f);
+  const h = f.dataset.form && FORMS[f.dataset.form];
+  if (h) h(f);
+});
 document.addEventListener('click', e => {
   const el = e.target.closest('[data-a]');
   if (!el) return;
@@ -1285,7 +1507,7 @@ document.addEventListener('change', async e => {
 });
 
 $('#view').innerHTML = '<div class="empty">Lade …</div>';
-load();
+boot();
 </script>
 </body>
 </html>
