@@ -1,11 +1,14 @@
 #!/usr/bin/env python3
 """Familiendashboard: winziger Server ohne Abhängigkeiten (nur Python-Standardbibliothek).
 
-- Speichert pro Bereich ein JSON-Dokument in SQLite (/data/familie.db)
+- Speichert pro Familie und Bereich ein JSON-Dokument in SQLite (/data/familie.db)
 - Liefert die Oberfläche aus ./static
-- Kein Login: gedacht für den Zugriff über Tailscale + Caddy
+- Anmeldung mit E-Mail + Passwort (auth.py), jede Familie sieht nur ihre eigenen Daten
 """
+import hmac
 import ipaddress
+import secrets
+import shutil
 import socket
 import datetime as dt
 import html
@@ -22,6 +25,8 @@ from urllib.parse import urlencode, urlparse
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
+import auth
+
 try:
     from zoneinfo import ZoneInfo
 except ImportError:  # pragma: no cover
@@ -36,6 +41,11 @@ MAX_PHOTO = 4 * 1024 * 1024
 ID_RE = re.compile(r"^[a-z0-9]{2,32}$")
 MAX_BODY = 2 * 1024 * 1024
 LOCK = threading.Lock()
+COOKIE = "fd_session"
+SETUP_CODE = None  # wird beim Start gesetzt, solange noch kein Konto existiert
+FAILS = {}  # IP -> Zeitstempel fehlgeschlagener Anmeldeversuche
+FAILS_LOCK = threading.Lock()
+FAIL_LIMIT, FAIL_WINDOW = 10, 600
 
 # --- Event-Abfrage (krefeld.de) ---
 TZ_NAME = os.environ.get("TZ", "Europe/Berlin")
@@ -73,6 +83,7 @@ def db():
 
 
 def init_db():
+    global SETUP_CODE
     Path(DB_PATH).parent.mkdir(parents=True, exist_ok=True)
     with db() as c:
         c.execute(
@@ -80,6 +91,49 @@ def init_db():
             "k TEXT PRIMARY KEY, v TEXT NOT NULL, "
             "updated TEXT NOT NULL DEFAULT (datetime('now')))"
         )
+        auth.init(c)
+        if auth.user_count(c) == 0:
+            SETUP_CODE = secrets.token_hex(4)
+            print("=" * 60, flush=True)
+            print("Noch kein Konto vorhanden. Einrichtungscode:", SETUP_CODE, flush=True)
+            print("(Seite im Browser öffnen und das erste Konto anlegen.)", flush=True)
+            print("=" * 60, flush=True)
+
+
+def backup_db():
+    """Sicherungskopie der Datenbank vor dem ersten Umbau auf Familien (nur einmal pro Tag)."""
+    if not Path(DB_PATH).is_file():
+        return None
+    target = Path(DB_PATH).with_name(Path(DB_PATH).name + ".vor-auth-" + dt.date.today().isoformat())
+    if target.exists():
+        return target
+    src = sqlite3.connect(DB_PATH)
+    dst = sqlite3.connect(target)
+    try:
+        src.backup(dst)
+    finally:
+        dst.close()
+        src.close()
+    return target
+
+
+def migrate_legacy(c, family_id):
+    """Übernimmt die bisherigen Daten (v14, ohne Familienbezug) in die erste Familie."""
+    ph = ",".join("?" * len(KEYS))
+    c.execute(
+        f"INSERT OR IGNORE INTO fkv(family_id, k, v, updated) SELECT ?, k, v, updated FROM kv WHERE k IN ({ph})",
+        (family_id, *sorted(KEYS)),
+    )
+    dest = family_photo_dir(family_id)
+    dest.mkdir(parents=True, exist_ok=True)
+    if PHOTO_DIR.is_dir():
+        for f in PHOTO_DIR.glob("*.jpg"):  # Originale bleiben liegen (Rückweg auf v14 möglich)
+            if not (dest / f.name).exists():
+                shutil.copy2(f, dest / f.name)
+
+
+def family_photo_dir(family_id):
+    return PHOTO_DIR / family_id
 
 
 class EventError(Exception):
@@ -471,17 +525,31 @@ def events_refresh():
     return 202, {"status": "running"}
 
 
+def rl_blocked(ip):
+    t = time.time()
+    with FAILS_LOCK:
+        recent = [x for x in FAILS.get(ip, []) if t - x < FAIL_WINDOW]
+        FAILS[ip] = recent
+        return len(recent) >= FAIL_LIMIT
+
+
+def rl_fail(ip):
+    with FAILS_LOCK:
+        FAILS.setdefault(ip, []).append(time.time())
+
+
 class Handler(BaseHTTPRequestHandler):
     server_version = "Familiendashboard/1.0"
 
     def log_message(self, fmt, *args):
         print("%s %s" % (self.address_string(), fmt % args), flush=True)
 
+    # --- Hilfen ---
     def _send(self, code, body=b"", ctype="application/json; charset=utf-8", extra=None):
         self.send_response(code)
         self.send_header("Content-Type", ctype)
         self.send_header("Content-Length", str(len(body)))
-        headers = {"Cache-Control": "no-store"}
+        headers = {"Cache-Control": "no-store", "X-Content-Type-Options": "nosniff", "X-Frame-Options": "DENY"}
         headers.update(extra or {})
         for k, v in headers.items():
             self.send_header(k, v)
@@ -489,9 +557,81 @@ class Handler(BaseHTTPRequestHandler):
         if self.command != "HEAD":
             self.wfile.write(body)
 
-    def _json(self, code, obj):
-        self._send(code, json.dumps(obj, ensure_ascii=False).encode("utf-8"))
+    def _json(self, code, obj, extra=None):
+        self._send(code, json.dumps(obj, ensure_ascii=False).encode("utf-8"), extra=extra)
 
+    def _ip(self):
+        fwd = self.headers.get("X-Forwarded-For", "")
+        if fwd:  # Caddy hängt die echte Adresse hinten an
+            return fwd.split(",")[-1].strip()
+        return self.client_address[0]
+
+    def _token(self):
+        for part in self.headers.get("Cookie", "").split(";"):
+            k, _, v = part.strip().partition("=")
+            if k == COOKIE:
+                return v
+        return None
+
+    def _cookie(self, token, max_age):
+        parts = [f"{COOKIE}={token}", "Path=/", "HttpOnly", "SameSite=Lax", f"Max-Age={max_age}"]
+        if self.headers.get("X-Forwarded-Proto", "") == "https":
+            parts.append("Secure")
+        return {"Set-Cookie": "; ".join(parts)}
+
+    def _user(self):
+        tok = self._token()
+        if not tok:
+            return None
+        with LOCK, db() as c:
+            return auth.session_user(c, tok)
+
+    def _require(self):
+        u = self._user()
+        if not u:
+            self._json(401, {"error": "auth", "setup": SETUP_CODE is not None})
+        return u
+
+    def _same_origin(self):
+        """Schutz gegen fremde Webseiten: bei Schreibzugriffen muss Origin zum Host passen."""
+        origin = self.headers.get("Origin")
+        if not origin:
+            return True
+        return urlparse(origin).netloc == self.headers.get("Host", "")
+
+    def _read_body(self, limit):
+        try:
+            length = int(self.headers.get("Content-Length", "0"))
+        except ValueError:
+            self._json(400, {"error": "bad length"})
+            return None
+        if length <= 0 or length > limit:
+            self._json(413, {"error": "bad size"})
+            return None
+        return self.rfile.read(length)
+
+    def _read_json(self, limit=MAX_BODY):
+        raw = self._read_body(limit)
+        if raw is None:
+            return None
+        try:
+            obj = json.loads(raw.decode("utf-8"))
+        except (UnicodeDecodeError, json.JSONDecodeError):
+            self._json(400, {"error": "invalid json"})
+            return None
+        if not isinstance(obj, dict):
+            self._json(400, {"error": "invalid json"})
+            return None
+        return obj
+
+    def _auth_error(self, e):
+        self._json(e.status, {"error": "bad_request", "message": e.message})
+
+    def _me_payload(self, c, user):
+        return {"user": {k: user[k] for k in ("id", "name", "email", "role", "superadmin", "color")},
+                "family": auth.family_info(c, user["family_id"])}
+
+    # --- GET ---
     def do_HEAD(self):
         self.do_GET()
 
@@ -499,21 +639,40 @@ class Handler(BaseHTTPRequestHandler):
         path = self.path.split("?", 1)[0]
         if path == "/healthz":
             return self._json(200, {"ok": True})
+        m = re.fullmatch(r"/api/invite/([A-Za-z0-9_-]{10,80})", path)
+        if m:  # öffentlich: zeigt nur, ob der Link gilt und zu welcher Familie er gehört
+            with db() as c:
+                inv = auth.invite_info(c, m.group(1))
+            if not inv:
+                return self._json(404, {"error": "bad_request", "message": "Der Einladungslink ist ungültig oder abgelaufen."})
+            return self._json(200, {"family_name": inv["family_name"], "new_family": inv["new_family"]})
+        if path.startswith("/api/"):
+            user = self._require()
+            if not user:
+                return
+            return self._get_api(path, user)
+        if path.startswith("/photos/"):
+            user = self._require()
+            if not user:
+                return
+            m = re.fullmatch(r"/photos/([a-z0-9]{2,32})\.jpg", path)
+            f = family_photo_dir(user["family_id"]) / f"{m.group(1)}.jpg" if m else None
+            if not f or not f.is_file():
+                return self._json(404, {"error": "not found"})
+            return self._send(200, f.read_bytes(), "image/jpeg", {"Cache-Control": "private, max-age=31536000, immutable"})
+        self._static(path)
+
+    def _get_api(self, path, user):
+        if path == "/api/me":
+            with db() as c:
+                return self._json(200, self._me_payload(c, user))
         if path == "/api/state":
             with LOCK, db() as c:
-                rows = c.execute("SELECT k, v FROM kv").fetchall()
+                rows = c.execute("SELECT k, v FROM fkv WHERE family_id=?", (user["family_id"],)).fetchall()
             return self._json(200, {k: json.loads(v) for k, v in rows if k in KEYS})
         if path == "/api/events":
             return self._json(200, events_public())
-        if path.startswith("/api/"):
-            return self._json(404, {"error": "not found"})
-        if path.startswith("/photos/"):
-            m = re.fullmatch(r"/photos/([a-z0-9]{2,32})\.jpg", path)
-            f = PHOTO_DIR / f"{m.group(1)}.jpg" if m else None
-            if not f or not f.is_file():
-                return self._json(404, {"error": "not found"})
-            return self._send(200, f.read_bytes(), "image/jpeg", {"Cache-Control": "public, max-age=31536000, immutable"})
-        self._static(path)
+        return self._json(404, {"error": "not found"})
 
     def _static(self, path):
         rel = "index.html" if path in ("", "/") else path.lstrip("/")
@@ -525,26 +684,67 @@ class Handler(BaseHTTPRequestHandler):
         ctype = MIME.get(target.suffix.lower(), "application/octet-stream")
         self._send(200, target.read_bytes(), ctype)
 
+    # --- POST ---
     def do_POST(self):
         path = self.path.split("?", 1)[0]
+        if not self._same_origin():
+            return self._json(403, {"error": "bad_request", "message": "Anfrage von fremder Seite abgelehnt."})
+        if path.startswith("/api/auth/"):
+            return self._post_auth(path)
+        user = self._require()
+        if not user:
+            return
+        if path == "/api/me":
+            body = self._read_json(4096)
+            if body is None:
+                return
+            try:
+                with LOCK, db() as c:
+                    auth.update_profile(c, user["id"], body.get("name"), body.get("color"))
+                    user = auth.session_user(c, self._token())
+                    return self._json(200, self._me_payload(c, user))
+            except auth.AuthError as e:
+                return self._auth_error(e)
+        if path == "/api/me/password":
+            body = self._read_json(4096)
+            if body is None:
+                return
+            ip = self._ip()
+            if rl_blocked(ip):
+                return self._json(429, {"error": "bad_request", "message": "Zu viele Versuche. Bitte in ein paar Minuten erneut versuchen."})
+            try:
+                with LOCK, db() as c:
+                    auth.change_password(c, user["id"], body.get("old"), body.get("new"), keep_token=self._token())
+            except auth.AuthError as e:
+                if e.status == 403:
+                    rl_fail(ip)
+                return self._auth_error(e)
+            return self._json(200, {"ok": True})
+        if path == "/api/invites":
+            body = self._read_json(4096)
+            if body is None:
+                return
+            try:
+                with LOCK, db() as c:
+                    token, expires = auth.create_invite(c, user, bool(body.get("new_family")), body.get("role") or "member")
+            except auth.AuthError as e:
+                return self._auth_error(e)
+            return self._json(200, {"token": token, "expires": expires})
         if path == "/api/events/refresh":
             status, body = events_refresh()
             return self._json(status, body)
         m = re.fullmatch(r"/api/photo/([a-z0-9]{2,32})", path)
         if m:
-            try:
-                length = int(self.headers.get("Content-Length", "0"))
-            except ValueError:
-                return self._json(400, {"error": "bad length"})
-            if length <= 0 or length > MAX_PHOTO:
-                return self._json(413, {"error": "bad size"})
-            data = self.rfile.read(length)
+            data = self._read_body(MAX_PHOTO)
+            if data is None:
+                return
             if data[:3] != b"\xff\xd8\xff":
                 return self._json(400, {"error": "nur JPEG erlaubt"})
-            PHOTO_DIR.mkdir(parents=True, exist_ok=True)
-            tmp = PHOTO_DIR / f".{m.group(1)}.tmp"
+            pdir = family_photo_dir(user["family_id"])
+            pdir.mkdir(parents=True, exist_ok=True)
+            tmp = pdir / f".{m.group(1)}.tmp"
             tmp.write_bytes(data)
-            tmp.replace(PHOTO_DIR / f"{m.group(1)}.jpg")
+            tmp.replace(pdir / f"{m.group(1)}.jpg")
             return self._json(200, {"ok": True})
         if path == "/api/import-url":
             try:
@@ -558,38 +758,119 @@ class Handler(BaseHTTPRequestHandler):
             return self._json(status, result)
         return self._json(404, {"error": "not found"})
 
-    def do_DELETE(self):
-        m = re.fullmatch(r"/api/photo/([a-z0-9]{2,32})", self.path.split("?", 1)[0])
-        if not m:
-            return self._json(404, {"error": "not found"})
-        f = PHOTO_DIR / f"{m.group(1)}.jpg"
-        if f.is_file():
-            f.unlink()
-        self._json(200, {"ok": True})
+    def _post_auth(self, path):
+        if path == "/api/auth/logout":
+            tok = self._token()
+            if tok:
+                with LOCK, db() as c:
+                    auth.end_session(c, tok)
+            return self._json(200, {"ok": True}, extra=self._cookie("", 0))
+        body = self._read_json(4096)
+        if body is None:
+            return
+        ip = self._ip()
+        if rl_blocked(ip):
+            return self._json(429, {"error": "bad_request", "message": "Zu viele Versuche. Bitte in ein paar Minuten erneut versuchen."})
+        global SETUP_CODE
+        try:
+            with LOCK, db() as c:
+                if path == "/api/auth/login":
+                    uid = auth.login(c, body.get("email"), body.get("password"))
+                    if not uid:
+                        rl_fail(ip)
+                        raise auth.AuthError("E-Mail oder Passwort stimmt nicht.", 401)
+                elif path == "/api/auth/register":
+                    try:
+                        uid = auth.register(c, body.get("token"), body.get("email"), body.get("name"),
+                                            body.get("password"), body.get("family_name"))
+                    except auth.AuthError:
+                        rl_fail(ip)
+                        raise
+                elif path == "/api/auth/setup":
+                    if SETUP_CODE is None or auth.user_count(c) > 0:
+                        raise auth.AuthError("Die Einrichtung ist bereits abgeschlossen.", 403)
+                    code = body.get("code")
+                    if not isinstance(code, str) or not hmac.compare_digest(code.strip().lower(), SETUP_CODE):
+                        rl_fail(ip)
+                        raise auth.AuthError("Der Einrichtungscode stimmt nicht (steht im Container-Log).", 403)
+                    backup_db()
+                    fid = auth.create_family(c, body.get("family_name"))
+                    uid = auth.create_user(c, fid, body.get("email"), body.get("name"), body.get("password"),
+                                           role="admin", superadmin=True)
+                    migrate_legacy(c, fid)
+                    SETUP_CODE = None
+                else:
+                    return self._json(404, {"error": "not found"})
+                token = auth.new_session(c, uid)
+                user = auth.session_user(c, token)
+                payload = self._me_payload(c, user)
+        except auth.AuthError as e:
+            return self._auth_error(e)
+        return self._json(200, payload, extra=self._cookie(token, auth.SESSION_DAYS * 86400))
 
+    # --- DELETE ---
+    def do_DELETE(self):
+        path = self.path.split("?", 1)[0]
+        if not self._same_origin():
+            return self._json(403, {"error": "bad_request", "message": "Anfrage von fremder Seite abgelehnt."})
+        user = self._require()
+        if not user:
+            return
+        m = re.fullmatch(r"/api/photo/([a-z0-9]{2,32})", path)
+        if m:
+            f = family_photo_dir(user["family_id"]) / f"{m.group(1)}.jpg"
+            if f.is_file():
+                f.unlink()
+            return self._json(200, {"ok": True})
+        m = re.fullmatch(r"/api/family/members/(u[0-9a-f]{10})", path)
+        if m:
+            if user["role"] != "admin":
+                return self._json(403, {"error": "bad_request", "message": "Nur Admins können Mitglieder entfernen."})
+            try:
+                with LOCK, db() as c:
+                    auth.remove_member(c, user, m.group(1))
+            except auth.AuthError as e:
+                return self._auth_error(e)
+            return self._json(200, {"ok": True})
+        return self._json(404, {"error": "not found"})
+
+    # --- PUT ---
     def do_PUT(self):
         path = self.path.split("?", 1)[0]
+        if not self._same_origin():
+            return self._json(403, {"error": "bad_request", "message": "Anfrage von fremder Seite abgelehnt."})
         if not path.startswith("/api/"):
             return self._json(404, {"error": "not found"})
+        user = self._require()
+        if not user:
+            return
+        if path == "/api/family":
+            if user["role"] != "admin":
+                return self._json(403, {"error": "bad_request", "message": "Nur Admins können die Familie ändern."})
+            body = self._read_json(4096)
+            if body is None:
+                return
+            try:
+                with LOCK, db() as c:
+                    auth.update_family(c, user["family_id"], body.get("name"), body.get("ort"), body.get("plz"), body.get("radius"))
+                    return self._json(200, self._me_payload(c, auth.session_user(c, self._token())))
+            except auth.AuthError as e:
+                return self._auth_error(e)
         key = path[len("/api/"):]
         if key not in KEYS:
             return self._json(404, {"error": "unknown key"})
-        try:
-            length = int(self.headers.get("Content-Length", "0"))
-        except ValueError:
-            return self._json(400, {"error": "bad length"})
-        if length <= 0 or length > MAX_BODY:
-            return self._json(413, {"error": "bad size"})
-        raw = self.rfile.read(length)
+        raw = self._read_body(MAX_BODY)
+        if raw is None:
+            return
         try:
             value = json.loads(raw.decode("utf-8"))
         except (UnicodeDecodeError, json.JSONDecodeError):
             return self._json(400, {"error": "invalid json"})
         with LOCK, db() as c:
             c.execute(
-                "INSERT INTO kv(k, v, updated) VALUES(?, ?, datetime('now')) "
-                "ON CONFLICT(k) DO UPDATE SET v=excluded.v, updated=excluded.updated",
-                (key, json.dumps(value, ensure_ascii=False)),
+                "INSERT INTO fkv(family_id, k, v, updated) VALUES(?, ?, ?, datetime('now')) "
+                "ON CONFLICT(family_id, k) DO UPDATE SET v=excluded.v, updated=excluded.updated",
+                (user["family_id"], key, json.dumps(value, ensure_ascii=False)),
             )
         self._json(200, {"ok": True})
 
@@ -597,5 +878,6 @@ class Handler(BaseHTTPRequestHandler):
 if __name__ == "__main__":
     init_db()
     events_load()
+    httpd = ThreadingHTTPServer(("0.0.0.0", PORT), Handler)
     print(f"Familiendashboard läuft auf Port {PORT}, Datenbank: {DB_PATH}", flush=True)
-    ThreadingHTTPServer(("0.0.0.0", PORT), Handler).serve_forever()
+    httpd.serve_forever()
