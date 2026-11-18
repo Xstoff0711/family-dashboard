@@ -63,7 +63,11 @@ Namensvorschlag: **familie** (kurz, auf dem Handy leicht zu tippen). Auf dem Han
 
 ## Hinweise
 
-- Kein Login: Zugriff nur über das Tailnet (Tailscale) absichern, den Port nie ins Internet freigeben.
+- Anmeldung (seit v15): E-Mail + Passwort, jede Familie sieht nur ihre eigenen Daten. Den Port trotzdem nie ohne Caddy/TLS ins Internet freigeben.
+- Erster Start nach dem Update: `docker compose logs familiendashboard` zeigt den Einrichtungscode. Dann die Seite öffnen und das erste Konto anlegen; alle bisherigen Daten gehören danach zu dieser Familie. Der Server legt vorher `data/familie.db.vor-auth-<Datum>` als Backup an.
+- Weitere Familien/Mitglieder: im Profil (Klick auf den Kreis oben rechts) Einladungslink erzeugen (7 Tage gültig, einmal nutzbar). „Neue Familie einladen“ gibt es nur für das erste Konto (Betreiber).
+- Rückweg auf v14: alte Zip entpacken. Die Altdaten (`kv`-Tabelle, `data/photos/*.jpg`) bleiben unverändert erhalten.
+- Test: `python3 tests/test_auth.py` startet einen Testserver und prüft Anmeldung und Trennung der Familien.
 - Zwei Personen gleichzeitig: Es gilt "letzte Änderung gewinnt" pro Bereich (Rezepte, Plan, ...). Beim Zurückkehren in die App wird neu geladen.
 
 ## Rezeptfotos
