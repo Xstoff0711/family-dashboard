@@ -1,0 +1,19 @@
+services:
+  familiendashboard:
+    build: .
+    container_name: familiendashboard
+    restart: unless-stopped
+    environment:
+      TZ: Europe/Berlin
+      # EVENTS_AUTO: "0" schaltet die tägliche Event-Abfrage von krefeld.de aus (dann nur per Knopf)
+      EVENTS_AUTO: ${EVENTS_AUTO:-1}
+    volumes:
+      - ./data:/data
+    # Kein Port nach außen: Caddy erreicht den Container im Docker-Netzwerk "proxy"
+    # (Caddyfile: reverse_proxy familiendashboard:8080).
+    networks:
+      - proxy
+
+networks:
+  proxy:
+    external: true
