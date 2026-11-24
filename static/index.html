@@ -52,6 +52,13 @@ input[type=checkbox]{width:20px;height:20px;accent-color:var(--acc);flex:none}
 .overlay{position:fixed;inset:0;background:rgba(0,0,0,.45);z-index:20;display:flex;align-items:flex-end;justify-content:center}
 .sheet{background:var(--bg);width:100%;max-width:680px;max-height:90vh;overflow:auto;border-radius:18px 18px 0 0;padding:16px 16px calc(16px + env(safe-area-inset-bottom))}
 .sheet h3{margin:0 0 8px}
+.overlay,.sheet{overscroll-behavior:contain}
+html.lock,html.lock body{overflow:hidden}
+body.lock{position:fixed;left:0;right:0;width:100%}
+.sech{display:flex;align-items:center;gap:8px;margin:22px 0 2px}
+.sech h2{margin:0;font-size:18px;color:var(--ink);text-transform:none;letter-spacing:0}
+.sech .sp{flex:1}
+.sech+.muted{margin:0 0 6px}
 .seg{display:flex;gap:6px;margin:6px 0}
 .seg button{flex:1;font:inherit;font-size:14px;padding:7px;border-radius:10px;border:1px solid var(--line);background:var(--card);color:var(--ink);cursor:pointer}
 .seg button.on{background:var(--acc);color:var(--acc-ink);border-color:var(--acc)}
@@ -88,7 +95,7 @@ ul.ings{padding-left:20px;margin:6px 0}
 .chips.nowrap{flex-wrap:nowrap;overflow-x:auto;padding-bottom:4px}
 .chips.nowrap button{flex:none}
 .hero{width:100%;max-height:220px;object-fit:cover;border-radius:12px;margin:8px 0}
-#auth{position:fixed;inset:0;z-index:30;background:var(--bg);overflow:auto;padding:calc(24px + env(safe-area-inset-top)) 16px 32px}
+#auth{position:fixed;inset:0;z-index:30;background:var(--bg);overflow:auto;overscroll-behavior:contain;padding:calc(24px + env(safe-area-inset-top)) 16px 32px}
 #auth .box{max-width:420px;margin:0 auto}
 #auth h1{font-size:26px;margin:24px 0 6px}
 #auth .aerr,.perr{background:color-mix(in srgb,var(--danger) 12%,var(--card));color:var(--danger);border:1px solid var(--danger);border-radius:10px;padding:8px 10px;margin:8px 0;font-size:14px}
@@ -106,7 +113,7 @@ label.fl,div.fl{display:block;font-size:13px;color:var(--mut);margin-top:10px}
 </style>
 </head>
 <body>
-<header><h1>🏡 <span id="fam">Familie</span> <small style="font-size:11px;font-weight:400;color:var(--mut)">v15</small></h1><span id="sync"></span><button id="me" data-a="tab" data-t="profile" aria-label="Profil" hidden></button></header>
+<header><h1>🏡 <span id="fam">Familie</span> <small style="font-size:11px;font-weight:400;color:var(--mut)">v16</small></h1><span id="sync"></span><button id="me" data-a="tab" data-t="profile" aria-label="Profil" hidden></button></header>
 <main id="view"></main>
 <nav><div class="in" id="nav"></div></nav>
 <div id="modal"></div>
@@ -458,8 +465,8 @@ function setErr(id, t){ const e = document.getElementById(id); if (e) e.textCont
 function showAuth(a){
   AUTH = a; ME = null; S = {}; ui.modal = null;
   $('#me').hidden = true; $('#fam').textContent = 'Familie'; setSync('');
-  const box = $('#auth'); box.hidden = false; box.innerHTML = authHTML();
-  const first = box.querySelector('input'); if (first) first.focus();
+  const box = $('#auth'); box.hidden = false; box.innerHTML = authHTML(); scrollLock(true);
+  const first = box.querySelector('input'); if (first) first.focus({preventScroll:true});
 }
 function authHTML(){
   const a = AUTH;
@@ -506,7 +513,7 @@ async function authSubmit(form){
   if (!r.ok) return setErr('aerr', r.j.message || 'Das hat nicht geklappt.');
   ME = r.j;
   if (location.search) history.replaceState(null, '', location.pathname);
-  $('#auth').hidden = true; $('#auth').innerHTML = '';
+  $('#auth').hidden = true; $('#auth').innerHTML = ''; scrollLock(false);
   startApp();
 }
 function updateHeader(){
@@ -934,7 +941,7 @@ function shopItems(){
   return [...map.values()];
 }
 function viewShop(){
-  const items = shopItems(), chk = S.shopping.checked;
+  const items = shopItems(), chk = S.shopping.checked, mon = parseISO(ui.week);
   const groups = {};
   for (const it of items) (groups[catOf(it.n)] ??= []).push(it);
   const order = CATS.map(c=>c[0]).concat('🛒 Sonstiges');
@@ -942,11 +949,14 @@ function viewShop(){
     const on = !!chk[ui.week + '|' + it.key];
     return `<label class="row chk"><input type="checkbox" data-a="chkItem" data-k="${esc(it.key)}" ${on?'checked':''}><span class="grow ${on?'done':''}">${esc(it.n)}</span><span class="muted small">${esc(fmtQty(it.q, it.u))}</span></label>`;
   }).join('')}</div>`).join('');
-  const manual = S.shopping.manual.map(m => `<div class="row"><input type="checkbox" data-a="chkManual" data-id="${m.id}" ${m.done?'checked':''}><span class="grow ${m.done?'done':''}">${esc(m.text)}</span><button class="icon" data-a="rmManual" data-id="${m.id}" aria-label="Entfernen">✕</button></div>`).join('');
-  const mon = parseISO(ui.week);
+  const manualRows = S.shopping.manual.map(m => `<div class="row"><input type="checkbox" data-a="chkManual" data-id="${m.id}" ${m.done?'checked':''}><span class="grow ${m.done?'done':''}">${esc(m.text)}</span><button class="icon" data-a="rmManual" data-id="${m.id}" aria-label="Entfernen">✕</button></div>`).join('');
   return `<div class="bar"><button class="btn" data-a="wk" data-n="-1">‹</button><b class="sp" style="text-align:center">Einkauf KW ${isoWeek(mon)}</b><button class="btn" data-a="wk" data-n="1">›</button></div>
-    <div class="card"><div class="bar" style="margin:0"><input type="text" id="mi" placeholder="Eigenen Artikel hinzufügen …" style="margin:0" data-in="manualEnter"><button class="btn pri" data-a="addManual">＋</button></div>${manual}</div>
-    ${auto || '<div class="empty">Plane Gerichte in der Woche, dann erscheint hier die Einkaufsliste.</div>'}
+    <div class="sech"><h2>📝 Eigene Artikel</h2><span class="sp"></span><button class="btn pri" data-a="manualNew" aria-label="Artikel hinzufügen">＋</button></div>
+    <div class="muted small">Von euch selbst hinzugefügt</div>
+    <div class="card">${manualRows || '<div class="muted small" style="padding:6px 0">Noch nichts eingetragen. Tippe auf ＋.</div>'}</div>
+    <div class="sech"><h2>🍽️ Zutaten aus den Rezepten</h2></div>
+    <div class="muted small">Automatisch aus den geplanten Gerichten der KW ${isoWeek(mon)}</div>
+    ${auto || '<div class="card"><div class="empty">Plane Gerichte in der Woche, dann erscheinen hier ihre Zutaten.</div></div>'}
     <div class="bar"><span class="sp"></span><button class="btn" data-a="resetChecks">Häkchen zurücksetzen</button><button class="btn" data-a="clearManual">Erledigte entfernen</button></div>
     <p class="muted small">Mengen stammen aus den Rezepten (je Gericht einmal pro Eintrag). Bei Bedarf Rezepte anpassen.</p>`;
 }
@@ -1110,6 +1120,10 @@ function modalHTML(){
       <p class="muted small">Link zu einem Rezept einfügen (z. B. von Chefkoch oder einem Blog). Zutaten und Zubereitung werden übernommen, du prüfst sie vor dem Speichern.</p>
       <input type="text" id="urlin" inputmode="url" placeholder="https://…" value="${esc(m.url||'')}" autocomplete="off">
       <div class="bar"><span class="sp"></span><button class="btn" data-a="close">Abbrechen</button><button class="btn pri" data-a="doLinkImp">Importieren</button></div>`);
+  if (m.type === 'manual') return sheet(`<h3>🛒 Artikel hinzufügen</h3>
+      <input type="text" id="mi" placeholder="z. B. Milch, 2 Paprika …" data-in="manualEnter" autocomplete="off" enterkeyhint="done">
+      <label class="row chk"><input type="checkbox" id="mmore" ${m.more?'checked':''}><span>Danach weiteren Artikel eintragen</span></label>
+      <div class="bar"><span class="sp"></span><button class="btn" data-a="close">Abbrechen</button><button class="btn pri" data-a="addManual">Hinzufügen</button></div>`);
   if (m.type === 'busy') return sheet(`<h3>${esc(m.text)}</h3><div class="muted">Das dauert ein paar Sekunden.</div>`);
   if (m.type === 'msg') return sheet(`<h3>${esc(m.title)}</h3><p>${esc(m.text)}</p><div class="bar"><span class="sp"></span><button class="btn pri" data-a="close">OK</button></div>`);
   if (m.type === 'act') {
@@ -1251,7 +1265,24 @@ function render(){
   const active = ui.tab === 'recipes' ? 'week' : ui.tab === 'profile' ? '' : ui.tab;
   $('#nav').innerHTML = TABS.map(([k,ic,l]) => `<button class="${k===active?'on':''}" data-a="tab" data-t="${k}"><span>${ic}</span>${l}</button>`).join('');
   $('#modal').innerHTML = modalHTML();
+  scrollLock(!!ui.modal);
 }
+/* Hintergrund nicht mitscrollen, solange ein Dialog offen ist (auch iOS) */
+let lockY = null;
+function scrollLock(on){
+  const b = document.body;
+  if (on && lockY === null) {
+    lockY = window.scrollY;
+    document.documentElement.classList.add('lock');
+    b.classList.add('lock'); b.style.top = -lockY + 'px';
+  } else if (!on && lockY !== null) {
+    const y = lockY; lockY = null;
+    document.documentElement.classList.remove('lock');
+    b.classList.remove('lock'); b.style.top = '';
+    window.scrollTo(0, y);
+  }
+}
+function focusIn(id){ const i = document.getElementById(id); if (i) i.focus({preventScroll:true}); }
 const val = id => document.getElementById(id).value;
 const chkd = id => document.getElementById(id).checked;
 const close = () => { ui.modal = null; render(); };
@@ -1297,7 +1328,7 @@ const ACT = {
     const m = ui.modal; if (!m || !m.plan) return;
     delete (S.meta.checks || {})[checkKey(m.id, m.plan)]; save('meta'); render();
   },
-  linkImp: () => { ui.modal = {type:'urlimp'}; render(); const i = document.getElementById('urlin'); if (i) i.focus(); },
+  linkImp: () => { ui.modal = {type:'urlimp'}; render(); focusIn('urlin'); },
   doLinkImp: async () => {
     const url = val('urlin').trim();
     if (!/^https?:\/\//i.test(url)) { ui.modal = {type:'msg', title:'Link unvollständig', text:'Bitte einen vollständigen Link mit https:// einfügen.'}; render(); return; }
@@ -1389,7 +1420,13 @@ const ACT = {
   },
   delRecipe: () => { if (!confirm('Rezept löschen?')) return; const id = ui.modal.r.id, had = recipeById(id) && recipeById(id).photo; S.recipes = S.recipes.filter(r => r.id !== id); if (had && !readOnly) fetch('api/photo/' + id, {method:'DELETE'}).catch(() => {}); save('recipes'); close(); },
   chkItem: (ds, el) => { const k = ui.week + '|' + ds.k; if (el.checked) S.shopping.checked[k] = true; else delete S.shopping.checked[k]; save('shopping'); render(); },
-  addManual: () => { const t = val('mi').trim(); if (!t) return; S.shopping.manual.push({id:uid(), text:t, done:false}); save('shopping'); render(); },
+  manualNew: () => { ui.modal = {type:'manual', more:false}; render(); focusIn('mi'); },
+  addManual: () => {
+    const i = document.getElementById('mi'), t = i ? i.value.trim() : '';
+    if (!t) { if (i) i.focus(); return; }
+    S.shopping.manual.push({id:uid(), text:t, done:false}); save('shopping');
+    if (chkd('mmore')) { ui.modal.more = true; render(); focusIn('mi'); } else close();
+  },
   chkManual: (ds, el) => { S.shopping.manual.find(m => m.id === ds.id).done = el.checked; save('shopping'); render(); },
   rmManual: ds => { S.shopping.manual = S.shopping.manual.filter(m => m.id !== ds.id); save('shopping'); render(); },
   clearManual: () => { S.shopping.manual = S.shopping.manual.filter(m => !m.done); save('shopping'); render(); },
