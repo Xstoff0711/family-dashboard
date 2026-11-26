@@ -6,6 +6,10 @@
 <meta name="theme-color" content="#2f7d6d">
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="mobile-web-app-capable" content="yes">
+<link rel="manifest" href="/manifest.webmanifest">
+<link rel="apple-touch-icon" href="/apple-touch-icon.png">
+<link rel="icon" href="/icon-192.png">
+<meta name="apple-mobile-web-app-title" content="Familie">
 <title>Familie</title>
 <style>
 :root{--bg:#f6f3ee;--card:#fff;--ink:#23262b;--mut:#6b7280;--acc:#2f7d6d;--acc-ink:#fff;--line:#e8e3da;--warn:#b45309;--chip:#eef3f1;--danger:#b91c1c}
@@ -59,6 +63,10 @@ body.lock{position:fixed;left:0;right:0;width:100%}
 .sech h2{margin:0;font-size:18px;color:var(--ink);text-transform:none;letter-spacing:0}
 .sech .sp{flex:1}
 .sech+.muted{margin:0 0 6px}
+.pushst{display:flex;gap:8px;align-items:center;margin:2px 0 8px}
+.pushst .dot{width:10px;height:10px;border-radius:50%;background:var(--mut);flex:none}
+.pushst .dot.on{background:#16a34a}
+ol.steps{margin:6px 0 0;padding-left:20px}ol.steps li{margin:4px 0}
 .seg{display:flex;gap:6px;margin:6px 0}
 .seg button{flex:1;font:inherit;font-size:14px;padding:7px;border-radius:10px;border:1px solid var(--line);background:var(--card);color:var(--ink);cursor:pointer}
 .seg button.on{background:var(--acc);color:var(--acc-ink);border-color:var(--acc)}
@@ -113,7 +121,7 @@ label.fl,div.fl{display:block;font-size:13px;color:var(--mut);margin-top:10px}
 </style>
 </head>
 <body>
-<header><h1>🏡 <span id="fam">Familie</span> <small style="font-size:11px;font-weight:400;color:var(--mut)">v16</small></h1><span id="sync"></span><button id="me" data-a="tab" data-t="profile" aria-label="Profil" hidden></button></header>
+<header><h1>🏡 <span id="fam">Familie</span> <small style="font-size:11px;font-weight:400;color:var(--mut)">v17</small></h1><span id="sync"></span><button id="me" data-a="tab" data-t="profile" aria-label="Profil" hidden></button></header>
 <main id="view"></main>
 <nav><div class="in" id="nav"></div></nav>
 <div id="modal"></div>
@@ -522,7 +530,11 @@ function updateHeader(){
   b.style.background = ME.user.color; b.title = ME.user.name;
 }
 function startApp(){
-  S = {}; readOnly = false; ui.tab = 'today'; ui.modal = null;
+  const want = location.hash.slice(1);
+  S = {}; readOnly = false; ui.tab = ['today','week','shop','ideas','out','chores','profile'].includes(want) ? want : 'today'; ui.modal = null;
+  if (location.hash) history.replaceState(null, '', location.pathname + location.search);
+  PUSH.srv = null; PUSH.sub = null; PUSH.msg = '';
+  pushReg();
   updateHeader();
   $('#view').innerHTML = '<div class="empty">Lade …</div>';
   load();
@@ -1186,6 +1198,76 @@ function modalHTML(){
 }
 
 /* ---------- Profil ---------- */
+/* ---------- Benachrichtigungen (Web-Push) ---------- */
+const PUSH = {srv:null, sub:null, loading:false, busy:false, msg:''};
+const pushSupported = () => 'serviceWorker' in navigator && 'PushManager' in window && 'Notification' in window;
+const isIOS = () => /iPhone|iPad|iPod/.test(navigator.userAgent) || (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
+const isStandalone = () => matchMedia('(display-mode: standalone)').matches || navigator.standalone === true;
+function b64ToBytes(s){ s = s.replace(/-/g, '+').replace(/_/g, '/'); s += '='.repeat((4 - s.length % 4) % 4); return Uint8Array.from(atob(s), c => c.charCodeAt(0)); }
+async function pushReg(){
+  if (!window.isSecureContext || !pushSupported()) return null;
+  try { return await navigator.serviceWorker.register('/sw.js'); } catch (e) { return null; }
+}
+async function pushLoad(force){
+  if (PUSH.loading || (PUSH.srv && !force)) return;
+  PUSH.loading = true;
+  const r = await api('GET', 'api/push');
+  PUSH.srv = r.ok ? r.j : {available:false};
+  const reg = await pushReg();
+  PUSH.sub = reg ? await reg.pushManager.getSubscription().catch(() => null) : null;
+  // Gerät gehört evtl. inzwischen zu einem anderen Konto oder der Server ist neu: Abo still abgleichen
+  if (PUSH.sub && PUSH.srv.available) {
+    const key = PUSH.sub.options && PUSH.sub.options.applicationServerKey;
+    const same = !key || btoa(String.fromCharCode(...new Uint8Array(key))).replace(/\+/g,'-').replace(/\//g,'_').replace(/=+$/,'') === PUSH.srv.key;
+    if (same) { const s = await api('POST', 'api/push/subscribe', {subscription: PUSH.sub.toJSON()}); if (s.ok) PUSH.srv.devices = s.j.devices; }
+    else { await PUSH.sub.unsubscribe().catch(() => {}); PUSH.sub = null; }
+  }
+  PUSH.loading = false;
+  pushRefresh();
+}
+function pushRefresh(){ const el = document.getElementById('pushcard'); if (el) el.innerHTML = pushCard(); }
+function pushCard(){
+  const setup = `http://${location.hostname}/einrichten`;
+  if (!window.isSecureContext) return `<p class="small">Benachrichtigungen brauchen eine sichere Verbindung (https) mit vertrauenswürdigem Zertifikat.</p>
+    <p class="small">Öffne auf diesem Gerät <b>${esc(setup)}</b> und folge der Anleitung.</p>`;
+  if (!PUSH.srv) { setTimeout(() => pushLoad(), 0); return '<div class="muted small">Lade …</div>'; }
+  if (!PUSH.srv.available) return '<p class="muted small">Benachrichtigungen sind auf dem Server noch nicht eingerichtet.</p>';
+  if (!pushSupported()) {
+    if (isIOS() && !isStandalone()) return `<p class="small">Auf dem iPhone gibt es Benachrichtigungen nur, wenn das Dashboard auf dem Home-Bildschirm liegt:</p>
+      <ol class="steps small"><li>In Safari unten auf <b>Teilen</b> (Quadrat mit Pfeil) tippen.</li><li><b>Zum Home-Bildschirm</b> wählen und hinzufügen.</li><li>Das Dashboard über das neue Symbol öffnen, anmelden und hier einschalten.</li></ol>
+      <p class="muted small">Benötigt iOS 16.4 oder neuer.</p>`;
+    return '<p class="muted small">Dieser Browser unterstützt keine Benachrichtigungen.</p>';
+  }
+  const perm = Notification.permission, on = !!PUSH.sub, srv = PUSH.srv;
+  let dev;
+  if (perm === 'denied') dev = `<div class="pushst"><span class="dot"></span><span class="small">Benachrichtigungen sind für diese Seite blockiert.</span></div>
+    <p class="muted small">${isIOS() ? 'Ändern unter Einstellungen → Mitteilungen → Familie.' : 'Erlaube sie in den Website-Einstellungen des Browsers (Schloss-Symbol neben der Adresse) und lade die Seite neu.'}</p>`;
+  else dev = `<div class="pushst"><span class="dot ${on ? 'on' : ''}"></span><span class="grow small">${on ? 'Auf diesem Gerät eingeschaltet' : 'Auf diesem Gerät aus'}</span>
+    <button class="btn ${on ? '' : 'pri'}" data-a="${on ? 'pushOff' : 'pushOn'}" ${PUSH.busy ? 'disabled' : ''}>${on ? 'Ausschalten' : 'Einschalten'}</button></div>`;
+  const prefs = Object.entries(srv.labels || {}).map(([k, l]) => `<label class="row chk"><input type="checkbox" data-a="pushPref" data-k="${k}" ${srv.prefs[k] ? 'checked' : ''}><span>${esc(l)}</span></label>`).join('');
+  return `${dev}
+    <div class="fl">Benachrichtige mich, wenn jemand aus der Familie …</div>${prefs}
+    <div class="muted small" style="margin-top:6px">Gilt für alle deine Geräte. Über deine eigenen Änderungen bekommst du keine Nachricht. Mehrere Änderungen kurz hintereinander kommen gesammelt als eine Nachricht.</div>
+    ${PUSH.msg ? `<div class="small" style="margin-top:8px">${esc(PUSH.msg)}</div>` : ''}
+    ${srv.devices ? `<div class="bar"><span class="muted small grow">${srv.devices === 1 ? '1 Gerät' : srv.devices + ' Geräte'} angemeldet</span><button class="btn" data-a="pushTest" ${PUSH.busy ? 'disabled' : ''}>Testnachricht</button></div>` : ''}`;
+}
+async function pushUnsubLocal(){
+  try {
+    const reg = await navigator.serviceWorker.getRegistration();
+    const sub = reg && await reg.pushManager.getSubscription();
+    if (sub) { await api('POST', 'api/push/unsubscribe', {endpoint: sub.endpoint}); await sub.unsubscribe(); }
+  } catch (e) {}
+}
+window.addEventListener('hashchange', () => {
+  const t = location.hash.slice(1);
+  if (ME && ['today','week','shop','ideas','out','chores','profile'].includes(t)) { ui.tab = t; ui.modal = null; history.replaceState(null, '', location.pathname); window.scrollTo(0, 0); render(); }
+});
+if ('serviceWorker' in navigator) navigator.serviceWorker.addEventListener('message', e => {
+  const u = e.data && e.data.open; if (!u) return;
+  const t = new URL(u, location.href).hash.slice(1);
+  if (t && ME && !ui.modal) { ui.tab = t; window.scrollTo(0, 0); render(); }
+});
+
 function viewProfile(){
   const u = ME.user, f = ME.family, admin = u.role === 'admin';
   const sw = COLORS.map(c => `<button type="button" class="${c === u.color ? 'on' : ''}" style="background:${c}" data-a="pickColor" data-c="${c}" aria-label="Farbe ${c}"></button>`).join('');
@@ -1204,6 +1286,8 @@ function viewProfile(){
       <div class="perr" id="perr1"></div>
       <div class="bar"><span class="sp"></span><button class="btn pri" type="submit">Speichern</button></div>
     </form>
+    <h2>🔔 Benachrichtigungen</h2>
+    <div class="card" id="pushcard">${pushCard()}</div>
     <h2>Passwort ändern</h2>
     <form class="card" data-form="pw">
       <input type="email" value="${esc(u.email)}" autocomplete="username" hidden>
@@ -1500,7 +1584,46 @@ Object.assign(ACT, {
     if (!r.ok) { ui.modal = {type:'msg', title:'Nicht möglich', text:r.j.message || 'Das hat nicht geklappt.'}; return render(); }
     const m = await api('GET', 'api/me'); if (m.ok) ME = m.j; render();
   },
-  logout: async () => { await api('POST', 'api/auth/logout'); location.href = location.pathname; },
+  logout: async () => { if (window.isSecureContext && pushSupported()) await pushUnsubLocal(); await api('POST', 'api/auth/logout'); location.href = location.pathname; },
+  pushOn: async () => {
+    PUSH.msg = ''; PUSH.busy = true; pushRefresh();
+    try {
+      const perm = await Notification.requestPermission();
+      if (perm !== 'granted') { PUSH.msg = 'Ohne Erlaubnis kann das Dashboard keine Nachrichten zeigen.'; return; }
+      const reg = await pushReg(); if (!reg) throw new Error('sw');
+      await navigator.serviceWorker.ready;
+      let sub = await reg.pushManager.getSubscription();
+      if (sub) await sub.unsubscribe().catch(() => {});
+      sub = await reg.pushManager.subscribe({userVisibleOnly: true, applicationServerKey: b64ToBytes(PUSH.srv.key)});
+      const r = await api('POST', 'api/push/subscribe', {subscription: sub.toJSON()});
+      if (!r.ok) { await sub.unsubscribe().catch(() => {}); PUSH.msg = r.j.message || 'Einschalten fehlgeschlagen.'; return; }
+      PUSH.sub = sub; PUSH.srv.devices = r.j.devices; PUSH.msg = 'Eingeschaltet. Tippe auf „Testnachricht“, um es zu prüfen.';
+    } catch (e) { PUSH.msg = 'Einschalten fehlgeschlagen. Prüfe, ob die Seite über https mit gültigem Zertifikat läuft.'; }
+    finally { PUSH.busy = false; pushRefresh(); }
+  },
+  pushOff: async () => {
+    PUSH.busy = true; pushRefresh();
+    if (PUSH.sub) { const r = await api('POST', 'api/push/unsubscribe', {endpoint: PUSH.sub.endpoint}); if (r.ok) PUSH.srv.devices = r.j.devices; await PUSH.sub.unsubscribe().catch(() => {}); }
+    PUSH.sub = null; PUSH.busy = false; PUSH.msg = ''; pushRefresh();
+  },
+  pushPref: async (ds, el) => {
+    const r = await api('POST', 'api/push/prefs', {prefs: {[ds.k]: el.checked}});
+    if (r.ok) { PUSH.srv.prefs = r.j.prefs; setSync('✓ gespeichert'); } else { el.checked = !el.checked; setSync('⚠️ Speichern fehlgeschlagen'); }
+  },
+  pushTest: async () => {
+    PUSH.busy = true; PUSH.msg = 'Sende …'; pushRefresh();
+    const r = await api('POST', 'api/push/test');
+    if (!r.ok) PUSH.msg = r.j.message || 'Senden fehlgeschlagen.';
+    else {
+      PUSH.srv.devices = r.j.devices - r.j.removed;
+      const parts = [];
+      if (r.j.sent) parts.push(`Gesendet an ${r.j.sent} ${r.j.sent === 1 ? 'Gerät' : 'Geräte'}. Kommt nichts an, prüfe die Mitteilungs-Einstellungen des Geräts.`);
+      if (r.j.failed) parts.push(`${r.j.failed} ${r.j.failed === 1 ? 'Gerät' : 'Geräte'} nicht erreicht: Der Server kommt nicht zum Push-Dienst durch oder wurde abgelehnt (Details im Container-Log).`);
+      if (r.j.removed) parts.push(`${r.j.removed} abgelaufene ${r.j.removed === 1 ? 'Anmeldung' : 'Anmeldungen'} entfernt. Auf dem Gerät aus- und wieder einschalten.`);
+      PUSH.msg = parts.join(' ');
+    }
+    PUSH.busy = false; pushRefresh();
+  },
 });
 document.addEventListener('submit', e => {
   const f = e.target; e.preventDefault();

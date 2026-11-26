@@ -116,3 +116,61 @@ bearbeiten, Serie löschen. Rhythmen: täglich, wöchentlich, alle 2 Wochen, mon
 Offenes aus den letzten 14 Tagen steht als „Überfällig“ oben (auch auf „Heute“ als Hinweis).
 Sonntags gibt es den Wochenabschluss. 📋 Vorlagen: fertige Aufgaben zum Antippen (auch „Alle Aufgaben entfernen“).
 Aufgaben mit 🛒 öffnen direkt die Einkaufsliste.
+
+## Benachrichtigungen (v17)
+
+Wenn jemand aus der Familie eine Aufgabe abhakt, etwas auf die Einkaufsliste setzt oder den
+Essensplan ändert, bekommen die anderen eine Push-Nachricht. Jeder schaltet das im Profil unter
+🔔 pro Gerät ein und wählt, worüber er informiert werden will. Eigene Änderungen melden nichts;
+mehrere Änderungen innerhalb von 20 Sekunden kommen gesammelt; ein sofort wieder entfernter
+Haken meldet gar nichts.
+
+Voraussetzungen:
+- **Sichere Verbindung:** Das Gerät muss dem Zertifikat vertrauen (siehe Einrichtungsseite unten).
+- **iPhone/iPad:** ab iOS 16.4 und nur, wenn das Dashboard über *Teilen → Zum Home-Bildschirm*
+  hinzugefügt wurde und von dort geöffnet wird.
+- **Server:** braucht ausgehenden Zugang ins Internet zu den Push-Diensten
+  (`fcm.googleapis.com`, `*.push.apple.com`, `*.push.services.mozilla.com`, `*.notify.windows.com`).
+- **Kontaktadresse:** Apple verlangt eine echte Adresse (keine `.lan`/`.local`). Standard ist die
+  E-Mail des ersten Admin-Kontos; ändern über `PUSH_CONTACT=mailto:du@example.de` in der `.env`.
+
+Der Schlüssel liegt in `./data/vapid_private.pem`. Bleibt er erhalten (Backup!), bleiben alle
+Geräte angemeldet. Geht er verloren, muss jeder die Benachrichtigungen einmal neu einschalten.
+Fehler beim Versand stehen im Container-Log (`Push: …`).
+
+### Einrichtungsseite und Caddyfile
+
+`http://family-dashboard.lan/einrichten` (ohne „s“) prüft, ob das Gerät dem Caddy-Zertifikat
+vertraut, bietet es zum Herunterladen an und zeigt die Schritte für iPhone, Android, Windows, Mac und
+Linux. Diesen Link schickst du an neue Familienmitglieder. Dafür im Caddyfile **zusätzlich** zum
+bestehenden Block:
+
+```caddyfile
+family-dashboard.lan {
+	tls internal
+	reverse_proxy familiendashboard:8080
+}
+
+http://family-dashboard.lan {
+	handle /caddy-root.crt {
+		root * /data/caddy/pki/authorities/local
+		rewrite * /root.crt
+		header Content-Type application/x-x509-ca-cert
+		file_server
+	}
+	handle /einrichten {
+		reverse_proxy familiendashboard:8080
+	}
+	handle /icon-192.png {
+		reverse_proxy familiendashboard:8080
+	}
+	handle {
+		redir https://{host}{uri} 308
+	}
+}
+```
+
+`/data/caddy/pki/...` ist der Pfad im offiziellen Caddy-Container. Läuft Caddy anders, liegt
+`root.crt` unter `<Caddy-Datenordner>/pki/authorities/local/`. Über HTTP geht nur das öffentliche
+Root-Zertifikat raus, keine Daten. Danach `docker exec caddy caddy reload --config /etc/caddy/Caddyfile`
+(Containername ggf. anpassen).

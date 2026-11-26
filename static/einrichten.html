@@ -1,0 +1,139 @@
+<!doctype html>
+<html lang="de">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="theme-color" content="#2f7d6d">
+<link rel="icon" href="/icon-192.png">
+<title>Familiendashboard einrichten</title>
+<style>
+:root{--bg:#f6f3ee;--card:#fff;--ink:#23262b;--mut:#6b7280;--acc:#2f7d6d;--acc-ink:#fff;--line:#e8e3da;--ok:#15803d;--warn:#b45309}
+@media(prefers-color-scheme:dark){:root{--bg:#14171a;--card:#1d2125;--ink:#e8eaed;--mut:#9aa3ad;--acc:#4fb39f;--acc-ink:#0b1512;--line:#2a2f35;--ok:#4ade80;--warn:#fb923c}}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--ink);font:16px/1.5 system-ui,-apple-system,"Segoe UI",Roboto,sans-serif}
+main{max-width:560px;margin:0 auto;padding:24px 16px 48px}
+h1{font-size:26px;margin:8px 0 4px}
+h2{font-size:17px;margin:22px 0 8px}
+p{margin:6px 0}
+.mut{color:var(--mut);font-size:14px}
+.card{background:var(--card);border:1px solid var(--line);border-radius:14px;padding:14px 16px;margin:12px 0}
+.st{display:flex;gap:10px;align-items:center;font-weight:600}
+.st .dot{width:12px;height:12px;border-radius:50%;background:var(--mut);flex:none}
+.st.ok .dot{background:var(--ok)}.st.bad .dot{background:var(--warn)}
+.btn{display:inline-flex;align-items:center;justify-content:center;min-height:44px;font:inherit;font-size:15px;padding:9px 16px;border-radius:10px;border:1px solid var(--line);background:var(--card);color:var(--ink);text-decoration:none;cursor:pointer}
+.btn.pri{background:var(--acc);border-color:var(--acc);color:var(--acc-ink);font-weight:600}
+.bar{display:flex;gap:8px;flex-wrap:wrap;margin-top:12px}
+select{font:inherit;font-size:16px;width:100%;padding:9px 10px;border-radius:10px;border:1px solid var(--line);background:var(--card);color:var(--ink)}
+ol{padding-left:22px;margin:8px 0}li{margin:7px 0}
+b{font-weight:650}
+[hidden]{display:none!important}
+</style>
+</head>
+<body>
+<main>
+  <h1>🏡 Dashboard einrichten</h1>
+  <p class="mut">Damit das Dashboard sicher läuft und Benachrichtigungen schicken kann, muss dieses Gerät dem Zertifikat deines Heimservers vertrauen. Das ist einmalig pro Gerät.</p>
+
+  <div class="card">
+    <div class="st" id="st"><span class="dot"></span><span id="sttext">Prüfe die sichere Verbindung …</span></div>
+    <div class="bar" id="okbar" hidden><a class="btn pri" id="go" href="/">Zum Dashboard</a></div>
+    <div class="bar" id="badbar" hidden><a class="btn pri" href="/caddy-root.crt" download="caddy-root.crt">Zertifikat laden</a><button class="btn" id="again" type="button">Erneut prüfen</button></div>
+  </div>
+
+  <section id="howto" hidden>
+    <h2>So geht's</h2>
+    <label class="mut" for="dev">Gerät</label>
+    <select id="dev">
+      <option value="ios">iPhone / iPad</option>
+      <option value="android">Android</option>
+      <option value="win">Windows</option>
+      <option value="mac">Mac</option>
+      <option value="linux">Linux</option>
+    </select>
+
+    <div class="card" data-dev="ios">
+      <ol>
+        <li>Diese Seite in <b>Safari</b> öffnen (nicht in Chrome) und oben auf <b>Zertifikat laden</b> tippen, dann <b>Erlauben</b>.</li>
+        <li><b>Einstellungen</b> öffnen. Oben steht <b>Profil geladen</b>. Antippen, <b>Installieren</b> und den Gerätecode eingeben. (Falls nicht: Allgemein → VPN und Geräteverwaltung.)</li>
+        <li>Wichtig: <b>Einstellungen → Allgemein → Info → Zertifikatsvertrauenseinstellungen</b> und den Schalter bei <b>Caddy Local Authority</b> einschalten.</li>
+        <li>Zurück zu dieser Seite und <b>Erneut prüfen</b>.</li>
+        <li>Für Benachrichtigungen: Dashboard öffnen, unten auf <b>Teilen</b> → <b>Zum Home-Bildschirm</b>. Ab jetzt immer über das neue Symbol öffnen und im Profil unter 🔔 einschalten.</li>
+      </ol>
+    </div>
+    <div class="card" data-dev="android">
+      <ol>
+        <li>Oben auf <b>Zertifikat laden</b> tippen. Die Datei landet in <b>Downloads</b>.</li>
+        <li><b>Einstellungen</b> öffnen und oben nach <b>Zertifikat</b> suchen. Wähle <b>CA-Zertifikat</b> (oft unter Sicherheit → Weitere Sicherheitseinstellungen → Verschlüsselung &amp; Anmeldedaten → Zertifikat installieren).</li>
+        <li>Die Warnung mit <b>Trotzdem installieren</b> bestätigen und die Datei <b>caddy-root.crt</b> auswählen.</li>
+        <li>Chrome ganz schließen, wieder öffnen und hier <b>Erneut prüfen</b>.</li>
+        <li>Dann im Dashboard unter Profil → 🔔 die Benachrichtigungen einschalten.</li>
+      </ol>
+    </div>
+    <div class="card" data-dev="win">
+      <ol>
+        <li><b>Zertifikat laden</b> und die Datei doppelklicken → <b>Zertifikat installieren</b>.</li>
+        <li><b>Aktueller Benutzer</b> → <b>Alle Zertifikate in folgendem Speicher speichern</b> → <b>Vertrauenswürdige Stammzertifizierungsstellen</b> → Fertig stellen und die Sicherheitsfrage mit Ja beantworten.</li>
+        <li>Browser neu starten und <b>Erneut prüfen</b>. Firefox: Einstellungen → Datenschutz &amp; Sicherheit → Zertifikate anzeigen → Zertifizierungsstellen → Importieren.</li>
+      </ol>
+    </div>
+    <div class="card" data-dev="mac">
+      <ol>
+        <li><b>Zertifikat laden</b> und die Datei doppelklicken. Sie öffnet sich in der <b>Schlüsselbundverwaltung</b> (Schlüsselbund „Anmeldung“ oder „System“).</li>
+        <li>Das Zertifikat <b>Caddy Local Authority</b> doppelklicken → <b>Vertrauen</b> → <b>Bei Verwendung dieses Zertifikats: Immer vertrauen</b>.</li>
+        <li>Fenster schließen, Passwort eingeben, Browser neu starten und <b>Erneut prüfen</b>.</li>
+      </ol>
+    </div>
+    <div class="card" data-dev="linux">
+      <ol>
+        <li><b>Zertifikat laden</b>.</li>
+        <li>Arch/CachyOS/Fedora: <code>sudo trust anchor --store ~/Downloads/caddy-root.crt</code><br>Debian/Ubuntu: Datei nach <code>/usr/local/share/ca-certificates/</code> kopieren, dann <code>sudo update-ca-certificates</code>.</li>
+        <li>Chrome und Firefox nutzen teils eigene Speicher: dort unter Einstellungen → Zertifikate → Zertifizierungsstellen importieren.</li>
+        <li>Browser neu starten und <b>Erneut prüfen</b>.</li>
+      </ol>
+    </div>
+    <p class="mut">Das Zertifikat stammt von deinem Heimserver. Installiere es nur im eigenen Netz oder über Tailscale und gib die Datei nur an Familienmitglieder weiter.</p>
+  </section>
+</main>
+<script>
+{
+  const host = location.hostname;
+  const target = 'https://' + location.host.replace(/:\d+$/, '') + '/';
+  const $ = id => document.getElementById(id);
+  $('go').href = target;
+
+  const ua = navigator.userAgent;
+  const dev = /iPhone|iPad|iPod/.test(ua) || (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1) ? 'ios'
+    : /Android/.test(ua) ? 'android' : /Windows/.test(ua) ? 'win' : /Mac/.test(ua) ? 'mac' : 'linux';
+  $('dev').value = dev;
+  const showDev = () => document.querySelectorAll('[data-dev]').forEach(el => { el.hidden = el.dataset.dev !== $('dev').value; });
+  $('dev').addEventListener('change', showDev);
+  showDev();
+
+  function state(ok, text){
+    $('st').className = 'st ' + (ok === null ? '' : ok ? 'ok' : 'bad');
+    $('sttext').textContent = text;
+    $('okbar').hidden = ok !== true;
+    $('badbar').hidden = ok !== false;
+    $('howto').hidden = ok !== false;
+  }
+
+  async function check(){
+    state(null, 'Prüfe die sichere Verbindung …');
+    if (location.protocol === 'https:') return state(true, 'Die sichere Verbindung funktioniert auf diesem Gerät.');
+    try {
+      const ctl = new AbortController(); const t = setTimeout(() => ctl.abort(), 6000);
+      // no-cors: Antwort ist nicht lesbar, aber ein Zertifikatsfehler lässt die Anfrage scheitern
+      await fetch('https://' + host + '/healthz?' + Date.now(), {mode: 'no-cors', cache: 'no-store', signal: ctl.signal});
+      clearTimeout(t);
+      state(true, 'Die sichere Verbindung funktioniert auf diesem Gerät.');
+      setTimeout(() => { location.href = target; }, 1500);
+    } catch (e) {
+      state(false, 'Dieses Gerät vertraut dem Zertifikat noch nicht.');
+    }
+  }
+  $('again').addEventListener('click', check);
+  check();
+}
+</script>
+</body>
+</html>

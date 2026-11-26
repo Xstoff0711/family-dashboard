@@ -783,8 +783,8 @@ class Handler(BaseHTTPRequestHandler):
                     subs, subject = push.send_test(c, user)
             except push.PushError as e:
                 return self._json(e.status, {"error": "bad_request", "message": e.message})
-            ok, gone = push.send_test_now(subs, subject)
-            return self._json(200, {"sent": ok, "removed": gone, "devices": len(subs)})
+            ok, gone, failed = push.send_test_now(subs, subject)
+            return self._json(200, {"sent": ok, "removed": gone, "failed": failed, "devices": len(subs)})
         body = self._read_json(8192)
         if body is None:
             return

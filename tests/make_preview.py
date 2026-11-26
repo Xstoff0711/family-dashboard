@@ -11,7 +11,22 @@ html = (root / "static" / "index.html").read_text(encoding="utf-8")
 MOCK = r"""<script>
 /* VORSCHAU: Schein-Server im Browser, nur Testdaten, nichts wird gespeichert */
 (() => {
-  const DB = {users: [], families: [], sessions: null, invites: {}, state: {}, code: 'vorschau1', seq: 1};
+  const DB = {users: [], families: [], sessions: null, invites: {}, state: {}, code: 'vorschau1', seq: 1, prefs: {}, subs: new Set()};
+  /* Benachrichtigungen simulieren: Service Worker und Push-Dienst gibt es in der Vorschau nicht */
+  let pvSub = null;
+  const pm = {getSubscription: async () => pvSub, subscribe: async () => (pvSub = {endpoint: 'https://fcm.googleapis.com/vorschau', toJSON: () => ({}), unsubscribe: async () => { pvSub = null; return true; }})};
+  const fakeReg = {pushManager: pm};
+  try { Object.defineProperty(navigator, 'serviceWorker', {configurable: true, value: {register: async () => fakeReg, ready: Promise.resolve(fakeReg), getRegistration: async () => fakeReg, addEventListener() {}}}); } catch (e) {}
+  if (!('PushManager' in window)) window.PushManager = function(){};
+  let pvPerm = 'default';
+  window.Notification = {get permission(){ return pvPerm; }, requestPermission: async () => (pvPerm = 'granted')};
+  window.__pvNotify = (title, body) => {
+    const n = document.createElement('div');
+    n.style.cssText = 'position:fixed;left:50%;top:36px;transform:translateX(-50%);z-index:100;width:min(92vw,380px);background:rgba(40,40,45,.94);color:#fff;border-radius:16px;padding:10px 14px;font:14px/1.35 system-ui;box-shadow:0 8px 24px rgba(0,0,0,.3)';
+    n.innerHTML = '<div style="opacity:.7;font-size:12px">Familie · jetzt</div><b></b><div></div>';
+    n.querySelector('b').textContent = title; n.querySelector('div:last-child').textContent = body;
+    document.body.append(n); setTimeout(() => n.remove(), 4000);
+  };
   const COL = ['#3b82f6','#ec4899','#10b981','#f59e0b','#8b5cf6','#ef4444'];
   const id = p => p + (DB.seq++).toString(16).padStart(10, '0');
   const res = (status, obj, extra) => new Response(JSON.stringify(obj), {status, headers: {'Content-Type': 'application/json'}});
@@ -95,6 +110,12 @@ MOCK = r"""<script>
         if (t.id === me.id) return err(400, 'Du kannst dich nicht selbst entfernen.');
         DB.users = DB.users.filter(x => x !== t); return res(200, {ok: true});
       }
+      if (path === 'api/push' && method === 'GET') return res(200, {available: true, key: 'BPreviewKeyPreviewKeyPreviewKeyPreviewKeyPreviewKeyPreviewKeyPreviewKeyPreviewKeyPrevie',
+        prefs: DB.prefs[me.id] ||= {task: true, shop: true, plan: false}, labels: {task: 'Aufgabe erledigt', shop: 'Neuer Artikel auf der Einkaufsliste', plan: 'Essensplan geändert'}, devices: DB.subs.has(me.id) ? 1 : 0});
+      if (path === 'api/push/subscribe') { DB.subs.add(me.id); return res(200, {prefs: DB.prefs[me.id], devices: 1}); }
+      if (path === 'api/push/unsubscribe') { DB.subs.delete(me.id); return res(200, {prefs: DB.prefs[me.id], devices: 0}); }
+      if (path === 'api/push/prefs') { Object.assign(DB.prefs[me.id] ||= {}, body.prefs); return res(200, {prefs: DB.prefs[me.id], devices: DB.subs.has(me.id) ? 1 : 0}); }
+      if (path === 'api/push/test') { setTimeout(() => window.__pvNotify('🔔 Test', 'Benachrichtigungen funktionieren auf diesem Gerät.'), 600); return res(200, {sent: 1, removed: 0, failed: 0, devices: 1}); }
       if (path === 'api/state') return res(200, DB.state[me.family_id]);
       if (path === 'api/events') return res(200, {enabled: true, auto: false, status: 'idle', updated: null, error: null, items: [], window: null, stale: false});
       if (path === 'api/events/refresh') return res(200, {status: 'idle', recent: true});
@@ -128,6 +149,6 @@ MOCK = r"""<script>
 html = html.replace("<script>\n'use strict';", MOCK + "<script>\n'use strict';", 1)
 html = html.replace("new URLSearchParams(location.search).get('invite')", "(window.__INVITE ?? new URLSearchParams(location.search).get('invite'))")
 html = html.replace("location.href = location.pathname; },", "window.__INVITE = null; showAuth({mode:'login'}); },")
-html = html.replace("<title>Familie</title>", "<title>Familiendashboard v16 – Vorschau</title>")
+html = html.replace("<title>Familie</title>", "<title>Familiendashboard v17 – Vorschau</title>")
 assert "VORSCHAU" in html and "window.__INVITE" in html
 Path(sys.argv[1]).write_text(html, encoding="utf-8")

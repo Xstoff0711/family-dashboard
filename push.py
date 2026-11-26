@@ -370,7 +370,7 @@ def send_test(c, user):
 
 
 def send_test_now(subs, subject):
-    ok = gone = 0
+    ok = gone = failed = 0
     for s in subs:
         status = send_one(s, {"title": "🔔 Test", "body": "Benachrichtigungen funktionieren auf diesem Gerät.", "url": "/#profile"}, subject)
         if 200 <= status < 300:
@@ -379,4 +379,6 @@ def send_test_now(subs, subject):
             gone += 1
             with _DBLOCK, _DB() as c:
                 c.execute("DELETE FROM push_subs WHERE endpoint=?", (s["endpoint"],))
-    return ok, gone
+        else:
+            failed += 1
+    return ok, gone, failed
