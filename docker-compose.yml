@@ -7,6 +7,9 @@ services:
       TZ: Europe/Berlin
       # EVENTS_AUTO: "0" schaltet die tägliche Event-Abfrage von krefeld.de aus (dann nur per Knopf)
       EVENTS_AUTO: ${EVENTS_AUTO:-1}
+      # Kontakt-Adresse für die Push-Dienste (Apple verlangt eine echte Adresse, keine .lan/.local).
+      # Leer = E-Mail des ersten Admin-Kontos.
+      PUSH_CONTACT: ${PUSH_CONTACT:-}
     volumes:
       - ./data:/data
     # Kein Port nach außen: Caddy erreicht den Container im Docker-Netzwerk "proxy"

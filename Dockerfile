@@ -1,7 +1,9 @@
 FROM python:3.12-slim
 RUN apt-get update && apt-get install -y --no-install-recommends tzdata && rm -rf /var/lib/apt/lists/*
 WORKDIR /app
-COPY server.py auth.py .
+# Einzige Zusatzbibliothek: Verschlüsselung für Push-Benachrichtigungen
+RUN pip install --no-cache-dir cryptography==50.0.1
+COPY server.py auth.py push.py .
 COPY static static
 ENV DB_PATH=/data/familie.db PORT=8080 TZ=Europe/Berlin
 VOLUME /data

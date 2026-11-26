@@ -4,6 +4,7 @@
 - Speichert pro Familie und Bereich ein JSON-Dokument in SQLite (/data/familie.db)
 - Liefert die Oberfläche aus ./static
 - Anmeldung mit E-Mail + Passwort (auth.py), jede Familie sieht nur ihre eigenen Daten
+- Benachrichtigungen per Web-Push (push.py, braucht die Bibliothek `cryptography`)
 """
 import hmac
 import ipaddress
@@ -26,6 +27,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
 import auth
+import push
 
 try:
     from zoneinfo import ZoneInfo
@@ -92,12 +94,18 @@ def init_db():
             "updated TEXT NOT NULL DEFAULT (datetime('now')))"
         )
         auth.init(c)
+        push.init(c)
         if auth.user_count(c) == 0:
             SETUP_CODE = secrets.token_hex(4)
             print("=" * 60, flush=True)
             print("Noch kein Konto vorhanden. Einrichtungscode:", SETUP_CODE, flush=True)
             print("(Seite im Browser öffnen und das erste Konto anlegen.)", flush=True)
             print("=" * 60, flush=True)
+    push.setup(db, LOCK)
+    if push.load_key(Path(DB_PATH).parent):
+        print("Push-Benachrichtigungen bereit", flush=True)
+    else:
+        print("Push-Benachrichtigungen aus (Bibliothek cryptography fehlt)", flush=True)
 
 
 def backup_db():
@@ -672,10 +680,16 @@ class Handler(BaseHTTPRequestHandler):
             return self._json(200, {k: json.loads(v) for k, v in rows if k in KEYS})
         if path == "/api/events":
             return self._json(200, events_public())
+        if path == "/api/push":
+            with LOCK, db() as c:
+                prefs = push.get_prefs(c, user["id"])
+                devices = push.device_count(c, user["id"])
+            return self._json(200, {"available": push.enabled(), "key": push.public_key(), "prefs": prefs,
+                                    "labels": {k: v[0] for k, v in push.EVENTS.items()}, "devices": devices})
         return self._json(404, {"error": "not found"})
 
     def _static(self, path):
-        rel = "index.html" if path in ("", "/") else path.lstrip("/")
+        rel = {"": "index.html", "/": "index.html", "/einrichten": "einrichten.html"}.get(path, path.lstrip("/"))
         target = (STATIC / rel).resolve()
         if STATIC not in target.parents and target != STATIC:
             return self._json(403, {"error": "forbidden"})
@@ -730,6 +744,8 @@ class Handler(BaseHTTPRequestHandler):
             except auth.AuthError as e:
                 return self._auth_error(e)
             return self._json(200, {"token": token, "expires": expires})
+        if path.startswith("/api/push/"):
+            return self._post_push(path, user)
         if path == "/api/events/refresh":
             status, body = events_refresh()
             return self._json(status, body)
@@ -757,6 +773,34 @@ class Handler(BaseHTTPRequestHandler):
             status, result = import_url(url)
             return self._json(status, result)
         return self._json(404, {"error": "not found"})
+
+    def _post_push(self, path, user):
+        if not push.enabled():
+            return self._json(503, {"error": "bad_request", "message": "Benachrichtigungen sind auf dem Server nicht eingerichtet."})
+        if path == "/api/push/test":
+            try:
+                with LOCK, db() as c:
+                    subs, subject = push.send_test(c, user)
+            except push.PushError as e:
+                return self._json(e.status, {"error": "bad_request", "message": e.message})
+            ok, gone = push.send_test_now(subs, subject)
+            return self._json(200, {"sent": ok, "removed": gone, "devices": len(subs)})
+        body = self._read_json(8192)
+        if body is None:
+            return
+        try:
+            with LOCK, db() as c:
+                if path == "/api/push/subscribe":
+                    push.subscribe(c, user, body.get("subscription"))
+                elif path == "/api/push/unsubscribe":
+                    push.unsubscribe(c, user, body.get("endpoint"))
+                elif path == "/api/push/prefs":
+                    push.set_prefs(c, user["id"], body.get("prefs"))
+                else:
+                    return self._json(404, {"error": "not found"})
+                return self._json(200, {"prefs": push.get_prefs(c, user["id"]), "devices": push.device_count(c, user["id"])})
+        except push.PushError as e:
+            return self._json(e.status, {"error": "bad_request", "message": e.message})
 
     def _post_auth(self, path):
         if path == "/api/auth/logout":
@@ -829,6 +873,7 @@ class Handler(BaseHTTPRequestHandler):
             try:
                 with LOCK, db() as c:
                     auth.remove_member(c, user, m.group(1))
+                    c.execute("DELETE FROM push_subs WHERE user_id=?", (m.group(1),))
             except auth.AuthError as e:
                 return self._auth_error(e)
             return self._json(200, {"ok": True})
@@ -867,11 +912,21 @@ class Handler(BaseHTTPRequestHandler):
         except (UnicodeDecodeError, json.JSONDecodeError):
             return self._json(400, {"error": "invalid json"})
         with LOCK, db() as c:
+            old = None
+            if key in ("chores", "shopping", "plan"):
+                row = c.execute("SELECT v FROM fkv WHERE family_id=? AND k=?", (user["family_id"], key)).fetchone()
+                old = json.loads(row[0]) if row else None
             c.execute(
                 "INSERT INTO fkv(family_id, k, v, updated) VALUES(?, ?, ?, datetime('now')) "
                 "ON CONFLICT(family_id, k) DO UPDATE SET v=excluded.v, updated=excluded.updated",
                 (user["family_id"], key, json.dumps(value, ensure_ascii=False)),
             )
+        if key in ("chores", "shopping", "plan") and old is not None:
+            try:
+                added, removed = push.diff(key, old, value, user["name"])
+                push.record(user["family_id"], user["id"], added, removed)
+            except Exception as e:  # Benachrichtigungen dürfen das Speichern nie stören
+                print(f"Push: Ereignis nicht erkannt ({e})", flush=True)
         self._json(200, {"ok": True})
 
 
