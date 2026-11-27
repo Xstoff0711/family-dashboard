@@ -130,7 +130,7 @@ label.fl,div.fl{display:block;font-size:13px;color:var(--mut);margin-top:10px}
 </style>
 </head>
 <body>
-<header><h1>🏡 <span id="fam">Familie</span> <small style="font-size:11px;font-weight:400;color:var(--mut)">v18</small></h1><span id="sync"></span><button id="me" data-a="tab" data-t="profile" aria-label="Profil" hidden></button></header>
+<header><h1>🏡 <span id="fam">Familie</span> <small style="font-size:11px;font-weight:400;color:var(--mut)">v19</small></h1><span id="sync"></span><button id="me" data-a="tab" data-t="profile" aria-label="Profil" hidden></button></header>
 <main id="view"></main>
 <nav><div class="in" id="nav"></div></nav>
 <div id="modal"></div>
@@ -544,6 +544,7 @@ function startApp(){
   S = {}; readOnly = false; ui.tab = ['today','week','shop','ideas','out','chores','profile'].includes(want) ? want : 'today'; ui.modal = null;
   if (location.hash) history.replaceState(null, '', location.pathname + location.search);
   PUSH.srv = null; PUSH.sub = null; PUSH.msg = '';
+  for (const o of [BASE, VER, failed, again]) for (const k of Object.keys(o)) delete o[k];
   pushReg();
   updateHeader();
   $('#view').innerHTML = '<div class="empty">Lade …</div>';
@@ -572,17 +573,123 @@ const ui = {cweek:iso(monday(new Date())), evCat:'', evRange:'month', cityOpen:f
 const timers = {};
 
 function setSync(t){ $('#sync').textContent = t; }
+/* ---------- Gemeinsame Daten: Zusammenführen statt Überschreiben (seit v19) ----------
+   BASE[k] = letzter bekannter Stand vom Server, VER[k] = seine Versionsnummer.
+   Beim Speichern schickt das Gerät die Version mit. Hat inzwischen jemand anderes gespeichert (409),
+   werden die eigenen Änderungen (BASE → S) in den neuen Server-Stand eingearbeitet und erneut gesendet. */
+const BASE = {}, VER = {}, inflight = {}, again = {}, failed = {};
+const clone = v => v === undefined ? undefined : JSON.parse(JSON.stringify(v));
+const isObj = x => x !== null && typeof x === 'object' && !Array.isArray(x);
+const stable = v => JSON.stringify(v ?? null, (k, x) => isObj(x) ? Object.keys(x).sort().reduce((o, kk) => (o[kk] = x[kk], o), {}) : x);
+const same = (a, b) => stable(a) === stable(b);
+function merge3(base, mine, theirs){
+  if (same(mine, theirs)) return clone(mine);
+  if (same(mine, base)) return clone(theirs);
+  if (same(theirs, base)) return clone(mine);
+  if (isObj(mine) && isObj(theirs)) {
+    const b = isObj(base) ? base : {}, out = {};
+    for (const k of new Set([...Object.keys(theirs), ...Object.keys(mine)])) {
+      const inM = k in mine, inT = k in theirs, inB = k in b;
+      if (inM && inT) out[k] = merge3(b[k], mine[k], theirs[k]);
+      else if (inM) { if (!(inB && same(mine[k], b[k]))) out[k] = clone(mine[k]); }   // sonst: vom anderen gelöscht
+      else { if (!(inB && same(theirs[k], b[k]))) out[k] = clone(theirs[k]); }         // sonst: von mir gelöscht
+    }
+    return out;
+  }
+  if (Array.isArray(mine) && Array.isArray(theirs)) {
+    const b = Array.isArray(base) ? base : [];
+    const ided = a => a.every(x => isObj(x) && x.id != null);
+    if (ided(mine) && ided(theirs) && ided(b)) {   // Listen mit id (Aufgaben, Rezepte, eigene Artikel …)
+      const bm = new Map(b.map(x => [x.id, x])), mm = new Map(mine.map(x => [x.id, x])), tm = new Map(theirs.map(x => [x.id, x]));
+      const out = [];
+      for (const t of theirs) {
+        const m = mm.get(t.id), bb = bm.get(t.id);
+        if (m) out.push(merge3(bb, m, t));
+        else if (!(bb && same(t, bb))) out.push(clone(t));      // ich habe nur Unverändertes gelöscht
+      }
+      mine.forEach((m, i) => {
+        if (tm.has(m.id)) return;
+        const bb = bm.get(m.id);
+        if (bb && same(m, bb)) return;                           // vom anderen gelöscht
+        let at = 0;
+        for (let j = i - 1; j >= 0; j--) { const pos = out.findIndex(x => x.id === mine[j].id); if (pos >= 0) { at = pos + 1; break; } }
+        out.splice(at, 0, clone(m));
+      });
+      return out;
+    }
+    // Listen ohne id (z. B. Gerichte in einem Essensplatz): wie eine Menge mit Anzahl zusammenführen
+    const cnt = a => a.reduce((m, x) => m.set(stable(x), (m.get(stable(x)) || 0) + 1), new Map());
+    const cB = cnt(b), cM = cnt(mine), cT = cnt(theirs), used = new Map(), out = [];
+    const want = k => Math.max(0, (cT.get(k) || 0) + (cM.get(k) || 0) - (cB.get(k) || 0));
+    for (const x of [...theirs, ...mine]) { const k = stable(x), u = used.get(k) || 0; if (u < want(k)) { out.push(clone(x)); used.set(k, u + 1); } }
+    return out;
+  }
+  return clone(mine);   // derselbe Wert von beiden geändert: die eigene, neueste Eingabe gewinnt
+}
 function save(k){
   if (readOnly) return;
   clearTimeout(timers[k]);
-  timers[k] = setTimeout(async () => {
-    try {
-      const r = await fetch('api/' + k, {method:'PUT', headers:{'Content-Type':'application/json'}, body:JSON.stringify(S[k])});
-      if (!r.ok) throw new Error(r.status);
-      setSync('✓ gespeichert');
-    } catch (e) { setSync('⚠️ Speichern fehlgeschlagen'); }
-  }, 250);
+  timers[k] = setTimeout(() => { timers[k] = null; flush(k); }, 250);
 }
+async function flush(k){
+  if (inflight[k]) { again[k] = true; return; }
+  inflight[k] = true;
+  try {
+    for (let i = 0; i < 5; i++) {
+      const sent = clone(S[k]);
+      const r = await fetch('api/' + k, {method:'PUT', headers:{'Content-Type':'application/json', 'If-Match': String(VER[k] || 0)}, body:JSON.stringify(sent)});
+      if (r.status === 409) {
+        const j = await r.json();
+        S[k] = merge3(BASE[k], S[k], j.value);
+        BASE[k] = clone(j.value); VER[k] = j.ver;
+        softRender();
+        continue;
+      }
+      if (!r.ok) throw new Error(r.status);
+      const j = await r.json();
+      VER[k] = j.ver; BASE[k] = sent; failed[k] = false;
+      setSync('✓ gespeichert');
+      return;
+    }
+    throw new Error('conflict');
+  } catch (e) { failed[k] = true; setSync('⚠️ Speichern fehlgeschlagen, neuer Versuch …'); }
+  finally {
+    inflight[k] = false;
+    if (again[k]) { again[k] = false; save(k); }
+  }
+}
+/* Live-Aktualisierung: alle paar Sekunden fragen, ob ein anderes Gerät etwas gespeichert hat */
+let polling = false, needRender = false;
+const busyTyping = () => { const a = document.activeElement; return !!(a && a.closest && a.closest('#view') && /^(INPUT|TEXTAREA|SELECT)$/.test(a.tagName) && a.type !== 'checkbox'); };
+function softRender(){
+  if (ui.modal || busyTyping()) { needRender = true; return; }
+  needRender = false; render();
+}
+async function poll(){
+  if (!ME || readOnly || document.hidden || polling || !S.recipes) return;
+  polling = true;
+  try {
+    for (const k of ALL_KEYS) if (failed[k] && !inflight[k] && !timers[k]) flush(k);
+    const r = await fetch('api/versions');
+    if (!r.ok) return;
+    const v = await r.json();
+    const idle = k => !inflight[k] && !timers[k];
+    if (!ALL_KEYS.some(k => (v[k] || 0) !== (VER[k] || 0) && idle(k))) { if (needRender) softRender(); return; }
+    const s = await (await fetch('api/state')).json();
+    let changed = false;
+    for (const k of ALL_KEYS) {
+      const ver = (s._ver || {})[k] || 0;
+      if (ver === (VER[k] || 0) || !idle(k) || s[k] == null) continue;
+      const local = !same(S[k], BASE[k]);
+      S[k] = local ? merge3(BASE[k], S[k], s[k]) : clone(s[k]);
+      BASE[k] = clone(s[k]); VER[k] = ver; changed = true;
+      if (local) save(k);
+    }
+    if (changed || needRender) softRender();
+  } catch (e) { /* nächster Versuch beim nächsten Takt */ }
+  finally { polling = false; }
+}
+setInterval(poll, 5000);
 async function load(){
   try {
     const r = await fetch('api/state');
@@ -591,7 +698,8 @@ async function load(){
     const d = await r.json();
     const fresh = d.recipes == null;
     for (const k of KEYS) {
-      if (d[k] == null) { S[k] = DEFAULTS[k](); save(k); } else S[k] = d[k];
+      BASE[k] = clone(d[k]); VER[k] = (d._ver || {})[k] || 0;
+      if (d[k] == null) { S[k] = DEFAULTS[k](); save(k); } else S[k] = clone(d[k]);
     }
     let mig = false;
     for (const r of S.recipes) {
@@ -602,7 +710,8 @@ async function load(){
     let actMig = false;
     for (const a of S.activities) if (a.url == null) { a.url = TITLE_URLS[a.title] || ''; actMig = true; }
     if (actMig) save('activities');
-    S.meta = d.meta || {seeded: fresh ? DEFAULTS.recipes().map(r => r.name) : BASE_NAMES.slice()};
+    BASE.meta = clone(d.meta); VER.meta = (d._ver || {}).meta || 0;
+    S.meta = d.meta ? clone(d.meta) : {seeded: fresh ? DEFAULTS.recipes().map(r => r.name) : BASE_NAMES.slice()};
     let metaChanged = !d.meta;
     const haveNames = new Set(S.recipes.map(r => r.name));
     for (const r of DEFAULTS.recipes()) if (!S.meta.seeded.includes(r.name)) {
@@ -620,7 +729,8 @@ async function load(){
   render();
   loadEvents();
 }
-document.addEventListener('visibilitychange', () => { if (!document.hidden && !ui.modal && ME) load(); });
+document.addEventListener('visibilitychange', () => { if (!document.hidden && ME) { poll(); loadEvents(); } });
+document.addEventListener('focusout', () => { if (needRender) setTimeout(() => { if (needRender) softRender(); }, 50); });
 
 /* ---------- Daten-Zugriff ---------- */
 const checkKey = (id, p) => `${p.wk}|${p.d}|${p.s}|${id}`;

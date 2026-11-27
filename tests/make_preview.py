@@ -11,7 +11,7 @@ html = (root / "static" / "index.html").read_text(encoding="utf-8")
 MOCK = r"""<script>
 /* VORSCHAU: Schein-Server im Browser, nur Testdaten, nichts wird gespeichert */
 (() => {
-  const DB = {users: [], families: [], sessions: null, invites: {}, state: {}, code: 'vorschau1', seq: 1, prefs: {}, subs: new Set()};
+  const DB = {users: [], families: [], sessions: null, invites: {}, state: {}, code: 'vorschau1', seq: 1, prefs: {}, subs: new Set(), ver: {}};
   /* Benachrichtigungen simulieren: Service Worker und Push-Dienst gibt es in der Vorschau nicht */
   let pvSub = null;
   const pm = {getSubscription: async () => pvSub, subscribe: async () => (pvSub = {endpoint: 'https://fcm.googleapis.com/vorschau', toJSON: () => ({}), unsubscribe: async () => { pvSub = null; return true; }})};
@@ -116,11 +116,13 @@ MOCK = r"""<script>
       if (path === 'api/push/unsubscribe') { DB.subs.delete(me.id); return res(200, {prefs: DB.prefs[me.id], devices: 0}); }
       if (path === 'api/push/prefs') { Object.assign(DB.prefs[me.id] ||= {}, body.prefs); return res(200, {prefs: DB.prefs[me.id], devices: DB.subs.has(me.id) ? 1 : 0}); }
       if (path === 'api/push/test') { setTimeout(() => window.__pvNotify('🔔 Test', 'Benachrichtigungen funktionieren auf diesem Gerät.'), 600); return res(200, {sent: 1, removed: 0, failed: 0, devices: 1}); }
-      if (path === 'api/state') return res(200, DB.state[me.family_id]);
+      DB.ver[me.family_id] ||= {};
+      if (path === 'api/state') return res(200, {...DB.state[me.family_id], _ver: DB.ver[me.family_id]});
+      if (path === 'api/versions') return res(200, DB.ver[me.family_id]);
       if (path === 'api/events') return res(200, {enabled: true, auto: false, status: 'idle', updated: null, error: null, items: [], window: null, stale: false});
       if (path === 'api/events/refresh') return res(200, {status: 'idle', recent: true});
       m = path.match(/^api\/(recipes|plan|activities|chores|shopping|meta)$/);
-      if (m && method === 'PUT') { DB.state[me.family_id][m[1]] = body; return res(200, {ok: true}); }
+      if (m && method === 'PUT') { const v = DB.ver[me.family_id]; v[m[1]] = (v[m[1]] || 0) + 1; DB.state[me.family_id][m[1]] = body; return res(200, {ok: true, ver: v[m[1]]}); }
       return res(404, {error: 'not found'});
     } catch (e) { if (Array.isArray(e)) return err(e[0], e[1]); throw e; }
   }
@@ -149,6 +151,6 @@ MOCK = r"""<script>
 html = html.replace("<script>\n'use strict';", MOCK + "<script>\n'use strict';", 1)
 html = html.replace("new URLSearchParams(location.search).get('invite')", "(window.__INVITE ?? new URLSearchParams(location.search).get('invite'))")
 html = html.replace("location.href = location.pathname; },", "window.__INVITE = null; showAuth({mode:'login'}); },")
-html = html.replace("<title>Familie</title>", "<title>Familiendashboard v18 – Vorschau</title>")
+html = html.replace("<title>Familie</title>", "<title>Familiendashboard v19 – Vorschau</title>")
 assert "VORSCHAU" in html and "window.__INVITE" in html
 Path(sys.argv[1]).write_text(html, encoding="utf-8")

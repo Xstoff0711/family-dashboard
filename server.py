@@ -95,6 +95,9 @@ def init_db():
         )
         auth.init(c)
         push.init(c)
+        # Versionsnummer pro Familie und Bereich: schützt vor gegenseitigem Überschreiben (seit v19)
+        if "ver" not in [r[1] for r in c.execute("PRAGMA table_info(fkv)")]:
+            c.execute("ALTER TABLE fkv ADD COLUMN ver INTEGER NOT NULL DEFAULT 1")
         if auth.user_count(c) == 0:
             SETUP_CODE = secrets.token_hex(4)
             print("=" * 60, flush=True)
@@ -676,8 +679,14 @@ class Handler(BaseHTTPRequestHandler):
                 return self._json(200, self._me_payload(c, user))
         if path == "/api/state":
             with LOCK, db() as c:
-                rows = c.execute("SELECT k, v FROM fkv WHERE family_id=?", (user["family_id"],)).fetchall()
-            return self._json(200, {k: json.loads(v) for k, v in rows if k in KEYS})
+                rows = c.execute("SELECT k, v, ver FROM fkv WHERE family_id=?", (user["family_id"],)).fetchall()
+            out = {k: json.loads(v) for k, v, _ in rows if k in KEYS}
+            out["_ver"] = {k: ver for k, _, ver in rows if k in KEYS}
+            return self._json(200, out)
+        if path == "/api/versions":  # kleine Abfrage für die Live-Aktualisierung
+            with LOCK, db() as c:
+                rows = c.execute("SELECT k, ver FROM fkv WHERE family_id=?", (user["family_id"],)).fetchall()
+            return self._json(200, {k: ver for k, ver in rows if k in KEYS})
         if path == "/api/events":
             return self._json(200, events_public())
         if path == "/api/push":
@@ -911,15 +920,25 @@ class Handler(BaseHTTPRequestHandler):
             value = json.loads(raw.decode("utf-8"))
         except (UnicodeDecodeError, json.JSONDecodeError):
             return self._json(400, {"error": "invalid json"})
+        # If-Match: Version, auf der die Änderung beruht. Passt sie nicht mehr, hat inzwischen jemand
+        # anderes gespeichert: 409 mit dem aktuellen Stand, das Gerät führt zusammen und versucht es erneut.
+        # Ohne If-Match (ältere Oberflächen) wird wie bisher einfach überschrieben.
+        base = self.headers.get("If-Match")
+        try:
+            base = int(base.strip('" ')) if base is not None else None
+        except ValueError:
+            return self._json(400, {"error": "bad If-Match"})
         with LOCK, db() as c:
-            old = None
-            if key in ("chores", "shopping", "plan"):
-                row = c.execute("SELECT v FROM fkv WHERE family_id=? AND k=?", (user["family_id"], key)).fetchone()
-                old = json.loads(row[0]) if row else None
+            row = c.execute("SELECT v, ver FROM fkv WHERE family_id=? AND k=?", (user["family_id"], key)).fetchone()
+            cur_ver = row[1] if row else 0
+            if base is not None and base != cur_ver:
+                return self._json(409, {"error": "conflict", "ver": cur_ver, "value": json.loads(row[0]) if row else None})
+            old = json.loads(row[0]) if row and key in ("chores", "shopping", "plan") else None
+            new_ver = cur_ver + 1
             c.execute(
-                "INSERT INTO fkv(family_id, k, v, updated) VALUES(?, ?, ?, datetime('now')) "
-                "ON CONFLICT(family_id, k) DO UPDATE SET v=excluded.v, updated=excluded.updated",
-                (user["family_id"], key, json.dumps(value, ensure_ascii=False)),
+                "INSERT INTO fkv(family_id, k, v, updated, ver) VALUES(?, ?, ?, datetime('now'), ?) "
+                "ON CONFLICT(family_id, k) DO UPDATE SET v=excluded.v, updated=excluded.updated, ver=excluded.ver",
+                (user["family_id"], key, json.dumps(value, ensure_ascii=False), new_ver),
             )
         if key in ("chores", "shopping", "plan") and old is not None:
             try:
@@ -927,7 +946,7 @@ class Handler(BaseHTTPRequestHandler):
                 push.record(user["family_id"], user["id"], added, removed)
             except Exception as e:  # Benachrichtigungen dürfen das Speichern nie stören
                 print(f"Push: Ereignis nicht erkannt ({e})", flush=True)
-        self._json(200, {"ok": True})
+        self._json(200, {"ok": True, "ver": new_ver})
 
 
 if __name__ == "__main__":

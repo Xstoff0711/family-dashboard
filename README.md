@@ -184,3 +184,20 @@ mit 🛒-Knopf (z. B. Wocheneinkauf) im Haushalt ab und meldet „Einkauf erledi
 (Ereignis `shopdone`, im Profil abschaltbar; die Wocheneinkauf-Meldung wird dann verschluckt).
 Danach einige Sekunden „Rückgängig“; wer das nutzt, löst keine Nachricht aus. Sind alle Artikel
 abgehakt, erscheint oben „Alles im Wagen 🎉“. „Häkchen zurücksetzen“ holt alles dieser Woche zurück.
+
+## Mehrere Geräte gleichzeitig (v19)
+
+Jeder Bereich (Aufgaben, Einkauf, Essensplan, Rezepte, Ideen, Einstellungen) hat pro Familie eine
+Versionsnummer (`fkv.ver`). Ein Gerät speichert mit `If-Match: <Version>`; hat inzwischen jemand
+anderes gespeichert, antwortet der Server mit 409 und dem aktuellen Stand. Das Gerät führt dann seine
+eigenen Änderungen in diesen Stand ein (3-Wege-Vergleich: letzter bekannter Stand, eigener Stand,
+Server-Stand; Listen mit `id` pro Eintrag, Haken/Schlüssel einzeln) und speichert erneut. So gehen
+gleichzeitige Haken nicht mehr verloren. Ändern zwei Personen genau denselben Wert, gewinnt die
+neuere Eingabe.
+
+Solange die Seite sichtbar ist, fragt sie alle 5 Sekunden `GET /api/versions` ab und lädt nur bei
+Änderungen nach. Offene Dialoge und laufende Eingaben werden dabei nicht unterbrochen; die Anzeige
+wird danach aktualisiert.
+
+Tests: `python3 tests/test_sync.py`, `node tests/test_merge.js`, Zwei-Geräte-Test
+`BASE=http://127.0.0.1:18085 CODE=<Code> node tests/e2e_sync.js` gegen einen frischen Server.
