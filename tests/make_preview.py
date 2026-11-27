@@ -111,7 +111,7 @@ MOCK = r"""<script>
         DB.users = DB.users.filter(x => x !== t); return res(200, {ok: true});
       }
       if (path === 'api/push' && method === 'GET') return res(200, {available: true, key: 'BPreviewKeyPreviewKeyPreviewKeyPreviewKeyPreviewKeyPreviewKeyPreviewKeyPreviewKeyPrevie',
-        prefs: DB.prefs[me.id] ||= {task: true, shop: true, plan: false}, labels: {task: 'Aufgabe erledigt', shop: 'Neuer Artikel auf der Einkaufsliste', plan: 'Essensplan geändert'}, devices: DB.subs.has(me.id) ? 1 : 0});
+        prefs: DB.prefs[me.id] ||= {task: true, shop: true, shopdone: true, plan: false}, labels: {task: 'Aufgabe erledigt', shop: 'Neuer Artikel auf der Einkaufsliste', shopdone: 'Einkauf abgeschlossen', plan: 'Essensplan geändert'}, devices: DB.subs.has(me.id) ? 1 : 0});
       if (path === 'api/push/subscribe') { DB.subs.add(me.id); return res(200, {prefs: DB.prefs[me.id], devices: 1}); }
       if (path === 'api/push/unsubscribe') { DB.subs.delete(me.id); return res(200, {prefs: DB.prefs[me.id], devices: 0}); }
       if (path === 'api/push/prefs') { Object.assign(DB.prefs[me.id] ||= {}, body.prefs); return res(200, {prefs: DB.prefs[me.id], devices: DB.subs.has(me.id) ? 1 : 0}); }
