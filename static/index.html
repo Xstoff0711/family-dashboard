@@ -67,6 +67,15 @@ body.lock{position:fixed;left:0;right:0;width:100%}
 .pushst .dot{width:10px;height:10px;border-radius:50%;background:var(--mut);flex:none}
 .pushst .dot.on{background:#16a34a}
 ol.steps{margin:6px 0 0;padding-left:20px}ol.steps li{margin:4px 0}
+.cart{border-style:dashed}
+.cart .head{display:flex;gap:8px;align-items:center;cursor:pointer;min-height:40px}
+.cart .head b{flex:1}
+.allin{background:color-mix(in srgb,var(--acc) 12%,var(--card));border-color:var(--acc);display:flex;gap:10px;align-items:center;flex-wrap:wrap}
+.allin b{flex:1}
+#toast{position:fixed;left:50%;transform:translateX(-50%);bottom:calc(74px + env(safe-area-inset-bottom));z-index:25;width:min(92vw,520px);background:var(--ink);color:var(--bg);border-radius:12px;padding:10px 12px 10px 16px;display:flex;gap:10px;align-items:center;box-shadow:0 6px 20px rgba(0,0,0,.25)}
+#toast span{flex:1}
+#toast button{font:inherit;font-weight:600;background:none;border:0;color:var(--bg);text-decoration:underline;cursor:pointer;padding:6px}
+#toast[hidden]{display:none}
 .seg{display:flex;gap:6px;margin:6px 0}
 .seg button{flex:1;font:inherit;font-size:14px;padding:7px;border-radius:10px;border:1px solid var(--line);background:var(--card);color:var(--ink);cursor:pointer}
 .seg button.on{background:var(--acc);color:var(--acc-ink);border-color:var(--acc)}
@@ -121,10 +130,11 @@ label.fl,div.fl{display:block;font-size:13px;color:var(--mut);margin-top:10px}
 </style>
 </head>
 <body>
-<header><h1>🏡 <span id="fam">Familie</span> <small style="font-size:11px;font-weight:400;color:var(--mut)">v17</small></h1><span id="sync"></span><button id="me" data-a="tab" data-t="profile" aria-label="Profil" hidden></button></header>
+<header><h1>🏡 <span id="fam">Familie</span> <small style="font-size:11px;font-weight:400;color:var(--mut)">v18</small></h1><span id="sync"></span><button id="me" data-a="tab" data-t="profile" aria-label="Profil" hidden></button></header>
 <main id="view"></main>
 <nav><div class="in" id="nav"></div></nav>
 <div id="modal"></div>
+<div id="toast" hidden></div>
 <div id="auth" hidden></div>
 <input type="file" id="photof" accept="image/*" hidden>
 
@@ -445,7 +455,7 @@ const DEFAULTS = {
     {id:uid(), title:'Wäsche waschen', who:'both', repeat:'weekly', day:5, date:'', done:{}, skip:{}, moved:{}},
     {id:uid(), title:'Bad putzen', who:'me', repeat:'weekly', day:5, date:'', done:{}, skip:{}, moved:{}},
   ],
-  shopping: () => ({checked:{}, manual:[]}),
+  shopping: () => ({checked:{}, manual:[], bought:{}, lastDone:null}),
 };
 
 /* ---------- Anmeldung ---------- */
@@ -952,25 +962,73 @@ function shopItems(){
   }
   return [...map.values()];
 }
+/* Einkauf: offen / im Wagen / gekauft (gekauft = für diese Woche erledigt, kommt nicht wieder) */
+function shopState(){
+  const sh = S.shopping; sh.bought ??= {}; sh.checked ??= {}; sh.manual ??= [];
+  const w = ui.week + '|', items = shopItems();
+  const open = items.filter(it => !sh.checked[w + it.key] && !sh.bought[w + it.key]);
+  const cart = items.filter(it => sh.checked[w + it.key] && !sh.bought[w + it.key]);
+  const mOpen = sh.manual.filter(m => !m.done), mCart = sh.manual.filter(m => m.done);
+  const bought = items.filter(it => sh.bought[w + it.key]).length;
+  return {open, cart, mOpen, mCart, bought, cartN: cart.length + mCart.length, openN: open.length + mOpen.length};
+}
 function viewShop(){
-  const items = shopItems(), chk = S.shopping.checked, mon = parseISO(ui.week);
+  const st = shopState(), mon = parseISO(ui.week);
   const groups = {};
-  for (const it of items) (groups[catOf(it.n)] ??= []).push(it);
+  for (const it of st.open) (groups[catOf(it.n)] ??= []).push(it);
   const order = CATS.map(c=>c[0]).concat('🛒 Sonstiges');
-  const auto = order.filter(c => groups[c]).map(c => `<h2>${c}</h2><div class="card">${groups[c].sort((a,b)=>a.n.localeCompare(b.n,'de')).map(it => {
-    const on = !!chk[ui.week + '|' + it.key];
-    return `<label class="row chk"><input type="checkbox" data-a="chkItem" data-k="${esc(it.key)}" ${on?'checked':''}><span class="grow ${on?'done':''}">${esc(it.n)}</span><span class="muted small">${esc(fmtQty(it.q, it.u))}</span></label>`;
-  }).join('')}</div>`).join('');
-  const manualRows = S.shopping.manual.map(m => `<div class="row"><input type="checkbox" data-a="chkManual" data-id="${m.id}" ${m.done?'checked':''}><span class="grow ${m.done?'done':''}">${esc(m.text)}</span><button class="icon" data-a="rmManual" data-id="${m.id}" aria-label="Entfernen">✕</button></div>`).join('');
+  const auto = order.filter(c => groups[c]).map(c => `<h2>${c}</h2><div class="card">${groups[c].sort((a,b)=>a.n.localeCompare(b.n,'de')).map(it =>
+    `<label class="row chk"><input type="checkbox" data-a="chkItem" data-k="${esc(it.key)}"><span class="grow">${esc(it.n)}</span><span class="muted small">${esc(fmtQty(it.q, it.u))}</span></label>`).join('')}</div>`).join('');
+  const manualRows = st.mOpen.map(m => `<div class="row"><input type="checkbox" data-a="chkManual" data-id="${m.id}"><span class="grow">${esc(m.text)}</span><button class="icon" data-a="rmManual" data-id="${m.id}" aria-label="Entfernen">✕</button></div>`).join('');
+  const cartRows = st.mCart.map(m => `<div class="row"><input type="checkbox" data-a="chkManual" data-id="${m.id}" checked><span class="grow done">${esc(m.text)}</span><span class="muted small">eigener</span></div>`).join('')
+    + st.cart.sort((a,b)=>a.n.localeCompare(b.n,'de')).map(it => `<label class="row chk"><input type="checkbox" data-a="chkItem" data-k="${esc(it.key)}" checked><span class="grow done">${esc(it.n)}</span><span class="muted small">${esc(fmtQty(it.q, it.u))}</span></label>`).join('');
+  const allIn = st.cartN && !st.openN;
+  const cart = st.cartN ? `<div class="card cart">
+      <div class="head" data-a="cartToggle"><b>✓ Im Wagen (${st.cartN})</b><span class="muted">${ui.cartOpen ? '▴' : '▾'}</span></div>
+      ${ui.cartOpen ? `<div class="muted small">Haken entfernen legt es zurück auf die Liste.</div>${cartRows}` : ''}
+      <div class="bar"><span class="sp"></span><button class="btn pri" data-a="finishShop">Einkauf abschließen</button></div>
+    </div>` : '';
+  const recipeEmpty = !shopItems().length ? '<div class="card"><div class="empty">Plane Gerichte in der Woche, dann erscheinen hier ihre Zutaten.</div></div>'
+    : !st.open.length ? `<div class="card"><div class="muted small" style="padding:6px 0">Alles erledigt${st.bought ? ` (${st.bought} schon gekauft)` : ''}.</div></div>` : '';
   return `<div class="bar"><button class="btn" data-a="wk" data-n="-1">‹</button><b class="sp" style="text-align:center">Einkauf KW ${isoWeek(mon)}</b><button class="btn" data-a="wk" data-n="1">›</button></div>
+    ${allIn ? '<div class="card allin"><b>Alles im Wagen 🎉</b><button class="btn pri" data-a="finishShop">Einkauf abschließen</button></div>' : ''}
     <div class="sech"><h2>📝 Eigene Artikel</h2><span class="sp"></span><button class="btn pri" data-a="manualNew" aria-label="Artikel hinzufügen">＋</button></div>
     <div class="muted small">Von euch selbst hinzugefügt</div>
-    <div class="card">${manualRows || '<div class="muted small" style="padding:6px 0">Noch nichts eingetragen. Tippe auf ＋.</div>'}</div>
+    <div class="card">${manualRows || '<div class="muted small" style="padding:6px 0">Nichts offen. Tippe auf ＋.</div>'}</div>
     <div class="sech"><h2>🍽️ Zutaten aus den Rezepten</h2></div>
-    <div class="muted small">Automatisch aus den geplanten Gerichten der KW ${isoWeek(mon)}</div>
-    ${auto || '<div class="card"><div class="empty">Plane Gerichte in der Woche, dann erscheinen hier ihre Zutaten.</div></div>'}
-    <div class="bar"><span class="sp"></span><button class="btn" data-a="resetChecks">Häkchen zurücksetzen</button><button class="btn" data-a="clearManual">Erledigte entfernen</button></div>
-    <p class="muted small">Mengen stammen aus den Rezepten (je Gericht einmal pro Eintrag). Bei Bedarf Rezepte anpassen.</p>`;
+    <div class="muted small">Automatisch aus den geplanten Gerichten der KW ${isoWeek(mon)}${st.bought && st.open.length ? ` · ${st.bought} schon gekauft` : ''}</div>
+    ${auto || recipeEmpty}
+    ${cart}
+    ${st.cartN || st.bought ? '<div class="bar"><span class="sp"></span><button class="btn" data-a="resetChecks">Häkchen zurücksetzen</button></div>' : ''}
+    <p class="muted small">Abhaken legt in den Wagen. „Einkauf abschließen“ entfernt alles im Wagen, hakt den Wocheneinkauf im Haushalt ab und sagt der Familie Bescheid. Mengen stammen aus den Rezepten.</p>`;
+}
+
+/* Einkauf abschließen: Wagen leeren, Wocheneinkauf abhaken, Rückgängig anbieten */
+function shopChoreOcc(){
+  // offener Termin einer Aufgabe mit 🛒-Knopf, möglichst nah an heute (bis 14 Tage zurück, bis Ende dieser Woche)
+  const t = new Date(), end = addDays(monday(t), 6);
+  let best = null;
+  for (const c of S.chores || []) {
+    if (c.link !== 'shop') continue;
+    for (let d = addDays(t, -14); d <= end; d = addDays(d, 1)) {
+      if (!dueOn(c, d) || isDone(c, d)) continue;
+      const dist = Math.abs(Math.round((d - t) / 864e5)) + (d > t ? 0.5 : 0);
+      if (!best || dist < best.dist) best = {c, d, dist};
+    }
+  }
+  return best;
+}
+let toastTimer = null;
+function showToast(text, undo){
+  const el = $('#toast'); clearTimeout(toastTimer);
+  el.innerHTML = `<span>${esc(text)}</span>${undo ? '<button data-a="toastUndo">Rückgängig</button>' : ''}`;
+  el.hidden = false; ui.undo = undo || null;
+  toastTimer = setTimeout(() => { el.hidden = true; ui.undo = null; }, 7000);
+}
+function pruneShop(){
+  // alte Wochen (älter als 8 Wochen) aus checked/bought entfernen
+  const lim = iso(addDays(monday(new Date()), -56));
+  for (const m of ['checked', 'bought']) for (const k of Object.keys(S.shopping[m] || {})) if (k.split('|')[0] < lim) delete S.shopping[m][k];
 }
 
 function filteredActs(){
@@ -1513,8 +1571,31 @@ const ACT = {
   },
   chkManual: (ds, el) => { S.shopping.manual.find(m => m.id === ds.id).done = el.checked; save('shopping'); render(); },
   rmManual: ds => { S.shopping.manual = S.shopping.manual.filter(m => m.id !== ds.id); save('shopping'); render(); },
-  clearManual: () => { S.shopping.manual = S.shopping.manual.filter(m => !m.done); save('shopping'); render(); },
-  resetChecks: () => { for (const k of Object.keys(S.shopping.checked)) if (k.startsWith(ui.week + '|')) delete S.shopping.checked[k]; save('shopping'); render(); },
+  cartToggle: () => { ui.cartOpen = !ui.cartOpen; render(); },
+  finishShop: () => {
+    const st = shopState(); if (!st.cartN) return;
+    const before = {shopping: structuredClone(S.shopping), chores: structuredClone(S.chores)};
+    const w = ui.week + '|';
+    for (const k of Object.keys(S.shopping.checked)) if (k.startsWith(w)) { S.shopping.bought[k] = true; delete S.shopping.checked[k]; }
+    S.shopping.manual = S.shopping.manual.filter(m => !m.done);
+    S.shopping.lastDone = {at: new Date().toISOString(), n: st.cartN};
+    pruneShop();
+    const occ = shopChoreOcc();
+    if (occ) { occ.c.done ??= {}; occ.c.done[iso(occ.d)] = true; save('chores'); }
+    save('shopping'); ui.cartOpen = false; render(); window.scrollTo(0, 0);
+    showToast(`Einkauf abgeschlossen (${st.cartN} ${st.cartN === 1 ? 'Artikel' : 'Artikel'})${occ ? ' · „' + occ.c.title + '“ abgehakt' : ''}`, () => {
+      S.shopping = before.shopping; S.chores = before.chores; save('shopping'); if (occ) save('chores'); render();
+      showToast('Rückgängig gemacht');
+    });
+  },
+  toastUndo: () => { const u = ui.undo; $('#toast').hidden = true; ui.undo = null; clearTimeout(toastTimer); if (u) u(); },
+  resetChecks: () => {
+    const before = structuredClone(S.shopping), w = ui.week + '|';
+    for (const m of ['checked', 'bought']) for (const k of Object.keys(S.shopping[m] || {})) if (k.startsWith(w)) delete S.shopping[m][k];
+    for (const m of S.shopping.manual) m.done = false;
+    save('shopping'); render();
+    showToast('Alle Häkchen dieser Woche zurückgesetzt', () => { S.shopping = before; save('shopping'); render(); });
+  },
   season: ds => { ui.season = ds.v; render(); },
   where: ds => { ui.where = ds.v; render(); },
   fav: ds => { const a = S.activities.find(x => x.id === ds.id); a.fav = !a.fav; save('activities'); render(); },

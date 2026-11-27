@@ -127,5 +127,37 @@ with db() as c:
     left = [r[0] for r in c.execute("SELECT endpoint FROM push_subs")]
 ok("Abgelaufene Abos werden entfernt", "https://fcm.googleapis.com/b" not in left and len(left) == 2, left)
 
+
+# v18: Einkauf abgeschlossen
+push.send_one = fake_send; sent.clear()
+with db() as c:
+    push.set_prefs(c, "ub", {"task": True})
+    push.subscribe(c, {"id": "ub", "family_id": "f1"}, sub("https://fcm.googleapis.com/b"))
+s_old = {"manual": [{"id": "m1", "text": "Milch", "done": True}], "lastDone": None}
+s_new = {"manual": [], "lastDone": {"at": "2026-11-27T10:00:00Z", "n": 3}}
+ch_old = [{"id": "w1", "title": "Wocheneinkauf", "link": "shop", "done": {}}]
+ch_new = [{"id": "w1", "title": "Wocheneinkauf", "link": "shop", "done": {"2026-11-27": True}}]
+a, r = push.diff("shopping", s_old, s_new, "Anna")
+ok("Einkauf abgeschlossen erkannt", any(k == "shopdone" for _, k, _ in a))
+push.record("f1", "ua", a, r)
+push.record("f1", "ua", *push.diff("chores", ch_old, ch_new, "Anna"))
+time.sleep(0.8)
+ok("Nur eine Nachricht: Einkauf erledigt (Wocheneinkauf verschluckt)", len(sent) == 1 and sent[0][1]["title"] == "🛒 Einkauf erledigt", sent)
+sent.clear()
+push.record("f1", "ua", *push.diff("shopping", s_old, s_new, "Anna"))
+push.record("f1", "ua", *push.diff("shopping", s_new, s_old, "Anna"))
+time.sleep(0.8)
+ok("Rückgängig: keine Nachricht", not sent, sent)
+sent.clear()
+push.record("f1", "ua", *push.diff("chores", ch_old, ch_new, "Anna"))
+time.sleep(0.8)
+ok("Wocheneinkauf allein abgehakt meldet als Aufgabe", len(sent) == 1 and "Wocheneinkauf" in sent[0][1]["body"], sent)
+sent.clear()
+with db() as c:
+    push.set_prefs(c, "ub", {"shopdone": False})
+push.record("f1", "ua", *push.diff("shopping", s_old, s_new, "Anna"))
+time.sleep(0.8)
+ok("Einkauf-Meldung abschaltbar", not sent, sent)
+
 print("\nAlle Push-Prüfungen bestanden." if not fails else f"\n{fails} Fehler.")
 sys.exit(1 if fails else 0)

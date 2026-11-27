@@ -174,3 +174,13 @@ http://family-dashboard.lan {
 `root.crt` unter `<Caddy-Datenordner>/pki/authorities/local/`. Über HTTP geht nur das öffentliche
 Root-Zertifikat raus, keine Daten. Danach `docker exec caddy caddy reload --config /etc/caddy/Caddyfile`
 (Containername ggf. anpassen).
+
+## Einkauf abschließen (v18)
+
+Abhaken legt einen Artikel in den eingeklappten Abschnitt „✓ Im Wagen“; Haken dort entfernen legt
+ihn zurück. „Einkauf abschließen“ löscht eigene Artikel im Wagen, merkt Rezeptzutaten für diese
+Woche als gekauft (`shopping.bought`, sie erscheinen nicht wieder), hakt die nächste offene Aufgabe
+mit 🛒-Knopf (z. B. Wocheneinkauf) im Haushalt ab und meldet „Einkauf erledigt“ an die Familie
+(Ereignis `shopdone`, im Profil abschaltbar; die Wocheneinkauf-Meldung wird dann verschluckt).
+Danach einige Sekunden „Rückgängig“; wer das nutzt, löst keine Nachricht aus. Sind alle Artikel
+abgehakt, erscheint oben „Alles im Wagen 🎉“. „Häkchen zurücksetzen“ holt alles dieser Woche zurück.

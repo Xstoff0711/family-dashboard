@@ -38,6 +38,7 @@ PUSH_HOSTS = ("fcm.googleapis.com", "push.services.mozilla.com", "push.apple.com
 EVENTS = {  # Schlüssel: (Bezeichnung im Profil, standardmäßig an)
     "task": ("Aufgabe erledigt", True),
     "shop": ("Neuer Artikel auf der Einkaufsliste", True),
+    "shopdone": ("Einkauf abgeschlossen", True),
     "plan": ("Essensplan geändert", False),
 }
 
@@ -240,7 +241,7 @@ def _done_keys(chores):
             continue
         for d, v in (ch.get("done") or {}).items():
             if v:
-                out[f"task|{ch.get('id')}|{d}"] = str(ch.get("title") or "Aufgabe")
+                out[f"task|{ch.get('id')}|{d}"] = (str(ch.get("title") or "Aufgabe"), ch.get("link") == "shop")
     return out
 
 
@@ -258,12 +259,22 @@ def diff(key, old, new, actor):
     added, removed = [], []
     if key == "chores":
         a, b = _done_keys(old), _done_keys(new)
-        added = [(k, "task", f"{actor} hat „{b[k]}“ erledigt") for k in b if k not in a]
+        # Einkaufs-Aufgaben (🛒) zählen als "task", werden aber verschluckt, wenn im selben Zeitraum
+        # "Einkauf abgeschlossen" gemeldet wird (sonst zwei Nachrichten für dasselbe)
+        added = [(k, "taskshop" if b[k][1] else "task", f"{actor} hat „{b[k][0]}“ erledigt") for k in b if k not in a]
         removed = [k for k in a if k not in b]
     elif key == "shopping":
         a, b = _manual(old), _manual(new)
         added = [(k, "shop", f"{actor} hat „{b[k]}“ auf die Einkaufsliste gesetzt") for k in b if k not in a]
         removed = [k for k in a if k not in b]
+        ld_old = (old or {}).get("lastDone") if isinstance(old, dict) else None
+        ld_new = (new or {}).get("lastDone") if isinstance(new, dict) else None
+        at_old = ld_old.get("at") if isinstance(ld_old, dict) else None
+        at_new = ld_new.get("at") if isinstance(ld_new, dict) else None
+        if at_new and at_new != at_old:
+            added.append((f"shopdone|{at_new}", "shopdone", f"{actor} hat den Einkauf erledigt 🛒"))
+        if at_old and at_old != at_new:  # Rückgängig gemacht
+            removed.append(f"shopdone|{at_old}")
     elif key == "plan" and old is not None and old != new:
         added = [("plan|" + actor, "plan", f"{actor} hat den Essensplan geändert")]
     return added, removed
@@ -291,10 +302,14 @@ def record(family_id, actor_id, added, removed):
         if p is None:
             if not added:
                 return
-            p = _PENDING[slot] = {"events": {}, "timer": None}
+            p = _PENDING[slot] = {"events": {}, "gone": set(), "timer": None}
         for k in removed:  # z. B. Haken gleich wieder entfernt: keine Nachricht
-            p["events"].pop(k, None)
+            if p["events"].pop(k, None) is None:
+                p["gone"].add(k)
         for k, kind, text in added:
+            if k in p["gone"]:  # war kurz weg und ist wieder da (Rückgängig): nichts melden
+                p["gone"].discard(k)
+                continue
             p["events"][k] = (kind, text)
         if p["timer"] is None:
             t = threading.Timer(DELAY, _flush, (slot,))
@@ -310,12 +325,16 @@ def _subject(c):
     return "mailto:" + row[0] if row else "mailto:admin@example.com"
 
 
+def _pref_of(kind):
+    return "task" if kind == "taskshop" else kind
+
+
 def _message(events):
     texts = [t for _, t in events]
     if len(texts) == 1:
-        kind = events[0][0]
-        title = {"task": "✅ Erledigt", "shop": "🛒 Einkaufsliste", "plan": "🍽️ Essensplan"}.get(kind, "Familie")
-        return {"title": title, "body": texts[0], "url": {"task": "/#chores", "shop": "/#shop", "plan": "/#week"}.get(kind, "/")}
+        kind = _pref_of(events[0][0])
+        title = {"task": "✅ Erledigt", "shop": "🛒 Einkaufsliste", "shopdone": "🛒 Einkauf erledigt", "plan": "🍽️ Essensplan"}.get(kind, "Familie")
+        return {"title": title, "body": texts[0], "url": {"task": "/#chores", "shop": "/#shop", "shopdone": "/#shop", "plan": "/#week"}.get(kind, "/")}
     body = "\n".join(texts[:4]) + (f"\n… und {len(texts) - 4} weitere" if len(texts) > 4 else "")
     return {"title": f"🏡 {len(texts)} Neuigkeiten", "body": body, "url": "/"}
 
@@ -327,6 +346,8 @@ def _flush(slot):
     if not p or not p["events"]:
         return
     events = list(p["events"].values())
+    if any(k == "shopdone" for k, _ in events):
+        events = [e for e in events if e[0] != "taskshop"]
     with _DBLOCK, _DB() as c:
         subject = _subject(c)
         rows = c.execute("SELECT s.endpoint, s.user_id, s.p256dh, s.auth FROM push_subs s "
@@ -339,7 +360,7 @@ def _flush(slot):
 def deliver(subs, events, prefs, subject):
     gone, ok = [], []
     for s in subs:
-        mine = [e for e in events if prefs.get(s["user_id"], {}).get(e[0])]
+        mine = [e for e in events if prefs.get(s["user_id"], {}).get(_pref_of(e[0]))]
         if not mine:
             continue
         try:

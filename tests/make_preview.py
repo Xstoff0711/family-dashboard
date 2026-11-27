@@ -149,6 +149,6 @@ MOCK = r"""<script>
 html = html.replace("<script>\n'use strict';", MOCK + "<script>\n'use strict';", 1)
 html = html.replace("new URLSearchParams(location.search).get('invite')", "(window.__INVITE ?? new URLSearchParams(location.search).get('invite'))")
 html = html.replace("location.href = location.pathname; },", "window.__INVITE = null; showAuth({mode:'login'}); },")
-html = html.replace("<title>Familie</title>", "<title>Familiendashboard v17 – Vorschau</title>")
+html = html.replace("<title>Familie</title>", "<title>Familiendashboard v18 – Vorschau</title>")
 assert "VORSCHAU" in html and "window.__INVITE" in html
 Path(sys.argv[1]).write_text(html, encoding="utf-8")
